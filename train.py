@@ -51,7 +51,7 @@ def parse_args():
     # Training parameters
     parser.add_argument("--timesteps", type=int, default=1000000,
                         help="Total training timesteps")
-    parser.add_argument("--n-envs", type=int, default=12,
+    parser.add_argument("--n-envs", type=int, default=16,
                         help="Number of parallel environments")
     parser.add_argument("--device", type=str, default="auto",
                         help="Device: 'cpu', 'cuda', or 'auto'")
@@ -444,7 +444,58 @@ def train(args):
     env.close()
     print("Training complete!")
 
+def test_env(args):
+    """Main training function."""
+    from envs import get_available_backends
+    from envs.factory import load_config_from_yaml
+    from envs.base import BasePushEnvConfig
+
+    # Check backend availability
+    available_backends = get_available_backends()
+    if args.backend not in available_backends:
+        print(f"Error: Backend '{args.backend}' is not available.")
+        print(f"Available backends: {available_backends}")
+        return
+
+    print(f"Training with backend: {args.backend}")
+    print(f"Observation type: {args.obs_type}")
+    print(f"Number of environments: {args.n_envs}")
+
+    # Load configuration
+    if args.config:
+        cfg = load_config_from_yaml(args.config)
+        print(f"Using config file: {args.config}")
+    else:
+        cfg = BasePushEnvConfig()
+        print("Using default configuration")
+
+    # Get training config
+    config = get_training_config(args, cfg)
+
+    # Create output directory and save config before training
+    os.makedirs(config["base_dir"], exist_ok=True)
+    if args.config:
+        config_dst = os.path.join(config["base_dir"], "config_used.yaml")
+        shutil.copy(args.config, config_dst)
+        print(f"Config saved: {config_dst}")
+
+    # Resolve checkpoint
+    model_path, vecnorm_path = resolve_checkpoint_path(args.load_checkpoint)
+
+    # Create environment
+    env = create_env(args, cfg, vecnorm_path)
+
+    while True:
+        obs = env.reset()
+        done = False
+        while not done:
+            action = env.action_space.sample()
+            action = action.reshape((env.num_envs, -1))
+            obs, reward, done, info = env.step(action)
+
 
 if __name__ == "__main__":
     args = parse_args()
+    # test_env(args)
     train(args)
+
