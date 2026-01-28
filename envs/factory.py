@@ -154,7 +154,7 @@ def make_vec_env(
         def make_env_fn():
             env = PyBulletPushEnv(
                 cfg=cfg,
-                render_mode="human",
+                render_mode=None,
                 obs_type=obs_type,
             )
             env = TimeLimit(env, max_episode_steps=cfg.max_episode_steps)

@@ -15,11 +15,11 @@ env:
 
   # Object spawn range
   object_r_range: [0.25, 0.6]
-  object_theta_range: [-1.57, -1]
+  object_theta_range: [-1.2, -0.2]
 
   # Target spawn range
   target_r_range: [0.5, 0.9]
-  target_theta_range: [-1.57, 1]  # Around pi (opposite side)
+  target_theta_range: [-1.57, -0.4]  # Around pi (opposite side)
 
   # Fixed EE initial position (set to avoid collision with object)
   # Object x_range is [0.3, 0.5], so EE at x=0.15 is safely behind
