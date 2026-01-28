@@ -154,7 +154,7 @@ def make_vec_env(
         def make_env_fn():
             env = PyBulletPushEnv(
                 cfg=cfg,
-                render_mode=None,
+                render_mode="human",
                 obs_type=obs_type,
             )
             env = TimeLimit(env, max_episode_steps=cfg.max_episode_steps)
@@ -197,7 +197,7 @@ def load_config_from_yaml(yaml_path: str) -> BasePushEnvConfig:
     """
     import yaml
 
-    with open(yaml_path, 'r') as f:
+    with open(yaml_path, 'r', encoding="utf-8") as f:
         config_dict = yaml.safe_load(f)
 
     return BasePushEnvConfig.from_dict(config_dict)
