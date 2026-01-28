@@ -13,6 +13,7 @@ import numpy as np
 import math
 import time
 from typing import Dict, Optional, Tuple, Any
+from collections import namedtuple
 
 from ..base import BasePushEnv, BasePushEnvConfig
 
@@ -48,20 +49,20 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         """
         super().__init__(cfg, render_mode, obs_type, num_envs=1, device="cpu")
 
-        # Connect to PyBullet
-        if render_mode == "human":
-            self.physics_client = p.connect(p.GUI)
-        else:
-            self.physics_client = p.connect(p.DIRECT)
 
-        p.setAdditionalSearchPath(pybullet_data.getDataPath())
+        self.asset_dir = r"C:\Users\Lenovo\projects\robotrl\envs\assets"
+        self.fixed_ee_z = self.cfg.fixed_ee_z
+        # Ranges
+        self.object_r_range = self.cfg.object_r_range
+        self.object_theta_range = self.cfg.object_theta_range
+        self.target_r_range = self.cfg.target_r_range
+        self.target_theta_range = self.cfg.target_theta_range
 
         # Define spaces
-        self._action_space = spaces.Box(low=-1, high=1, shape=(3,), dtype=np.float32)
+        self._action_space = spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
 
         self.img_width = 84
         self.img_height = 84
-
         if self.obs_type == "image":
             self._observation_space = spaces.Box(
                 low=0, high=255,
@@ -76,11 +77,13 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
                 dtype=np.float32
             )
 
-        # Scene objects (initialized in reset)
-        self.robot_id = None
-        self.plane_id = None
-        self.object_id = None
-        self.target_id = None
+
+        # Connect to PyBullet
+        self.phisics_client = p.connect(p.GUI if render_mode == "human" else p.DIRECT)
+        p.setGravity(0, 0, -9.8)
+        self.dt = 1.0 / 240.0  # Internal physics step
+        self.frame_skip = 24   # Control step: 240Hz / 24 = 10Hz control
+        p.setTimeStep(self.dt)
 
         # State tracking for incremental rewards
         self.prev_dist_obj_target = None
@@ -96,7 +99,94 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         self.fixed_orientation = p.getQuaternionFromEuler([math.pi, 0, 0])
 
         # Camera matrices for image observation
+        self._load_static_resources()
+        self._create_dynamic_actors()
         self._setup_cameras()
+
+    def _load_static_resources(self):
+        p.setAdditionalSearchPath(pybullet_data.getDataPath())
+        self.planeId = p.loadURDF("plane.urdf")
+        
+        # Robot
+        p.setAdditionalSearchPath(self.asset_dir)
+        base_pos = (0, 0, 0)
+        base_ori = p.getQuaternionFromEuler((0, 0, 0))
+        # Ensure file exists or handle error
+        try:
+            self.robotId = p.loadURDF("urdf/ur5_robotiq_85.urdf", base_pos, base_ori, useFixedBase=True)
+        except Exception as e:
+            print(f"Error loading robot URDF from {self.asset_dir}: {e}")
+            raise e
+
+        self.eef_id = 7
+        self.fixed_orientation = p.getQuaternionFromEuler([0, math.pi/2, 0])
+        
+        # Joint setup
+        self.arm_num_dofs = 6
+        self.arm_rest_poses = [-1.57, -1.54, 1.34, -1.37, -1.57, 0.0]
+        self.__parse_joint_info__()
+        self.__setup_mimic_joints__()
+
+    def _create_dynamic_actors(self):
+        # --- 尺寸定义 (与原代码一致) ---
+        base_half_extents = [0.1, 0.025, 0.025]  # 横杠
+        link_half_extents = [0.025, 0.075, 0.025] # 竖杠
+        link_pos = [0, -0.1, 0] 
+
+        # ==================================
+        # 1. 创建可操作物体 (红色 T 形块)
+        # ==================================
+        baseCol = p.createCollisionShape(p.GEOM_BOX, halfExtents=base_half_extents)
+        baseVis = p.createVisualShape(p.GEOM_BOX, halfExtents=base_half_extents, rgbaColor=[0.8, 0.1, 0.1, 1])
+        
+        linkCol = p.createCollisionShape(p.GEOM_BOX, halfExtents=link_half_extents)
+        linkVis = p.createVisualShape(p.GEOM_BOX, halfExtents=link_half_extents, rgbaColor=[0.8, 0.1, 0.1, 1])
+        
+        self.objectId = p.createMultiBody(
+            baseMass=0.5,
+            baseCollisionShapeIndex=baseCol,
+            baseVisualShapeIndex=baseVis,
+            basePosition=[0, 0, 0.025],
+            linkMasses=[0.5],
+            linkCollisionShapeIndices=[linkCol],
+            linkVisualShapeIndices=[linkVis],
+            linkPositions=[link_pos],
+            linkOrientations=[[0, 0, 0, 1]],
+            linkInertialFramePositions=[[0, 0, 0]],
+            linkInertialFrameOrientations=[[0, 0, 0, 1]],
+            linkParentIndices=[0],
+            linkJointTypes=[p.JOINT_FIXED],
+            linkJointAxis=[[0, 0, 0]]
+        )
+
+        p.changeDynamics(self.objectId, -1, lateralFriction=0.6, spinningFriction=0.1)
+        p.changeDynamics(self.objectId, 0, lateralFriction=0.6, spinningFriction=0.1)
+
+        # ==================================
+        # 2. 创建目标 (半透明绿色 T 形块 Ghost)
+        # ==================================
+        # 注意：Target 不需要 CollisionShape (设为 -1)，以免物理干扰
+        # 颜色设置为半透明绿色 (Alpha=0.3)
+        targetBaseVis = p.createVisualShape(p.GEOM_BOX, halfExtents=base_half_extents, rgbaColor=[0, 1, 0, 0.3])
+        targetLinkVis = p.createVisualShape(p.GEOM_BOX, halfExtents=link_half_extents, rgbaColor=[0, 1, 0, 0.3])
+
+        self.targetId = p.createMultiBody(
+            baseMass=0, # 静态物体
+            baseCollisionShapeIndex=-1, # 无碰撞
+            baseVisualShapeIndex=targetBaseVis,
+            basePosition=[0, 0, 0],
+            # 必须构建完全相同的 Link 结构，才能在视觉上成为 T 形
+            linkMasses=[0],
+            linkCollisionShapeIndices=[-1], # 无碰撞
+            linkVisualShapeIndices=[targetLinkVis],
+            linkPositions=[link_pos],
+            linkOrientations=[[0, 0, 0, 1]],
+            linkInertialFramePositions=[[0, 0, 0]],
+            linkInertialFrameOrientations=[[0, 0, 0, 1]],
+            linkParentIndices=[0],
+            linkJointTypes=[p.JOINT_FIXED],
+            linkJointAxis=[[0, 0, 0]]
+        )
 
     def _setup_cameras(self):
         """Set up camera matrices for rendering."""
@@ -136,133 +226,105 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
 
     def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None) -> Tuple[np.ndarray, Dict]:
         """Reset the environment."""
-        super(BasePushEnv, self).__init__()  # gymnasium.Env.reset() for seeding
-        if seed is not None:
-            self.np_random, _ = gym.utils.seeding.np_random(seed)
-
-        p.resetSimulation()
-        p.setGravity(0, 0, -9.8)
-        p.setTimeStep(1.0 / 120.0)
+        super().reset(seed=seed)
+        self.step_count = 0
 
         # Reset reward tracking
         self.prev_dist_obj_target = None
         self.prev_dist_ee_obj = None
         self.prev_yaw_error = None
 
-        # Load plane
-        self.plane_id = p.loadURDF("plane.urdf")
+        self.reset_arm()
+        self.move_gripper(0.0)
 
-        # Load robot (Kuka iiwa)
-        self.robot_id = p.loadURDF("kuka_iiwa/model.urdf", [0, 0, 0], useFixedBase=True)
+        center_x, center_y = 0., 0.
 
-        # Create object
-        col_box_id = p.createCollisionShape(
-            p.GEOM_BOX,
-            halfExtents=list(self.cfg.object_half_extents)
-        )
-        visual_box_id = p.createVisualShape(
-            p.GEOM_BOX,
-            halfExtents=list(self.cfg.object_half_extents),
-            rgbaColor=[1, 0, 0, 1]
-        )
+        # --- 1. 重置物体 (Object) ---
+        # 从配置中读取距离和方位角范围
+        obj_r = self.np_random.uniform(*self.object_r_range)
+        obj_theta = self.np_random.uniform(*self.object_theta_range)
+        
+        object_x = center_x + obj_r * np.cos(obj_theta)
+        object_y = center_y + obj_r * np.sin(obj_theta)
+        object_yaw = self.np_random.uniform(-np.pi, np.pi)
+        
+        self.object_pos = [object_x, object_y, 0.025]
+        orn = p.getQuaternionFromEuler([0, 0, object_yaw])
+        
+        p.resetBasePositionAndOrientation(self.objectId, self.object_pos, orn)
+        p.resetBaseVelocity(self.objectId, [0,0,0], [0,0,0])
 
-        # Randomize object position
-        object_x = self.np_random.uniform(*self.cfg.object_x_range)
-        object_y = self.np_random.uniform(*self.cfg.object_y_range)
-        self.object_pos = [object_x, object_y, 0.1]
-        self.object_id = p.createMultiBody(
-            baseMass=1,
-            baseCollisionShapeIndex=col_box_id,
-            baseVisualShapeIndex=visual_box_id,
-            basePosition=self.object_pos
-        )
-        p.changeDynamics(self.object_id, -1, ccdSweptSphereRadius=0.002)
+        # --- 2. 重置目标 (Target) ---
+        # 目标可以相对于物体进行偏移，或者也相对于中心点重置
+        # 这里演示相对于中心点重置
+        tar_r = self.np_random.uniform(*self.target_r_range)
+        tar_theta = self.np_random.uniform(*self.target_theta_range)
+        
+        target_x = center_x + tar_r * np.cos(tar_theta)
+        target_y = center_y + tar_r * np.sin(tar_theta)
+        target_yaw = self.np_random.uniform(-np.pi, np.pi)
 
-        # Create target visual
-        visual_target_id = p.createVisualShape(
-            p.GEOM_BOX,
-            halfExtents=list(self.cfg.target_half_extents),
-            rgbaColor=[0, 1, 0, 0.5]
-        )
-        target_x = self.np_random.uniform(*self.cfg.target_x_range)
-        target_y = self.np_random.uniform(*self.cfg.target_y_range)
         self.target_pos = np.array([target_x, target_y, 0.0])
+        self.target_yaw = target_yaw
+        target_orn = p.getQuaternionFromEuler([0, 0, target_yaw])
+        
+        p.resetBasePositionAndOrientation(self.targetId, self.target_pos, target_orn)
 
-        # Randomize target orientation
-        self.target_yaw = self.np_random.uniform(-math.pi, math.pi)
-        target_orn = p.getQuaternionFromEuler([0, 0, self.target_yaw])
-        self.target_id = p.createMultiBody(
-            baseMass=0,
-            baseVisualShapeIndex=visual_target_id,
-            basePosition=self.target_pos,
-            baseOrientation=target_orn
-        )
-
-        # Reset robot to initial pose
-        target_ee_pos = [
-            self.cfg.fixed_ee_initial_pos[0],
-            self.cfg.fixed_ee_initial_pos[1],
-            self.cfg.fixed_ee_z
-        ]
-        joint_poses = p.calculateInverseKinematics(
-            self.robot_id, 6, target_ee_pos, self.fixed_orientation
-        )
-        for i in range(7):
-            p.resetJointState(self.robot_id, i, joint_poses[i])
-
-        # Let physics settle
-        for _ in range(100):
-            p.stepSimulation()
-
-        self.step_count = 0
+        # 步进几帧让物体落稳
+        for _ in range(20): p.stepSimulation()
+        
+        # Init Reward Vars
+        self.prev_dist_obj_target = None
+        self.prev_dist_ee_obj = None
+        self.prev_ang_dist = None
 
         return self._get_obs(), {}
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Execute one environment step."""
         # Scale action
-        dx, dy, _ = action * 0.1
-        dz = 0
+        dx, dy = action * 0.1
 
-        # Get current EE position
-        current_ee_state = p.getLinkState(self.robot_id, 6)
+        # Get Current EE Pos (Fast retrieval)
+        current_ee_state = p.getLinkState(self.robotId, self.eef_id)
         current_ee_pos = current_ee_state[0]
+        
+        # Target Position
+        new_ee_pos = [current_ee_pos[0] + dx, current_ee_pos[1] + dy, self.fixed_ee_z]
 
-        # Compute new target position
-        new_ee_pos = [
-            current_ee_pos[0] + dx,
-            current_ee_pos[1] + dy,
-            self.cfg.fixed_ee_z
-        ]
-
-        # IK control
+        # IK Calculation
         joint_poses = p.calculateInverseKinematics(
-            self.robot_id, 6, new_ee_pos, self.fixed_orientation
+            self.robotId, self.eef_id, new_ee_pos, self.fixed_orientation,
+            self.arm_lower_limits, self.arm_upper_limits, self.arm_joint_ranges, self.arm_rest_poses,
+            maxNumIterations=10 # Reduced iterations for speed, usually enough for small deltas
         )
-        for i in range(7):
-            p.setJointMotorControl2(
-                self.robot_id, i, p.POSITION_CONTROL, joint_poses[i]
-            )
+        
+        # Motor Control
+        for i, joint_id in enumerate(self.arm_controllable_joints):
+            p.setJointMotorControl2(self.robotId, joint_id, p.POSITION_CONTROL, joint_poses[i], force=self.joints[joint_id].maxForce)
 
-        # Step physics (12 steps for 10Hz control at 120Hz physics)
-        for _ in range(12):
+        # Physics Stepping (Frame Skip)
+        for _ in range(self.frame_skip):
             p.stepSimulation()
-            if self.render_mode == "human":
-                time.sleep(1./120.)
+            # Enforce flat object constraint simply by re-asserting Z/Orientation IF necessary
+            # But relying on correct friction/inertia is better physics.
+            # If "teleport" is strictly needed, do it ONLY if object tips excessively.
+            # Here we skip the hack to respect physics, assuming box CoM is low.
 
-        # Enforce 2D constraint on object
-        pos, orn = p.getBasePositionAndOrientation(self.object_id)
-        new_pos = [pos[0], pos[1], 0.1]
-        euler = p.getEulerFromQuaternion(orn)
-        new_orn = p.getQuaternionFromEuler([0, 0, euler[2]])
-        p.resetBasePositionAndOrientation(self.object_id, new_pos, new_orn)
+        if self.render_mode == "human":
+            time.sleep(self.dt * self.frame_skip)
 
         self.step_count += 1
-
-        # Compute reward
+        
+        # Observation & Reward
+        obs = self._get_obs()
         reward, terminated, truncated = self._compute_reward()
 
-        return self._get_obs(), reward, terminated, truncated, {}
+        return obs, reward, terminated, truncated, {}
+    
+    def _angle_normalize(self, angle):
+        """将角度归一化到 [-pi, pi]"""
+        return (angle + np.pi) % (2 * np.pi) - np.pi
 
     def _get_obs(self) -> np.ndarray:
         """Get current observation."""
@@ -273,15 +335,12 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
 
     def _get_state_obs(self) -> np.ndarray:
         """Get 19D state observation."""
-        # End-effector position
-        ee_state = p.getLinkState(self.robot_id, 6)
-        ee_pos = np.array(ee_state[0][:2])
-
-        # Object position and orientation
-        obj_pos_full, obj_orn = p.getBasePositionAndOrientation(self.object_id)
-        obj_pos = np.array(obj_pos_full[:2])
-        obj_euler = p.getEulerFromQuaternion(obj_orn)
-        obj_yaw = obj_euler[2]
+        ee_pos = np.array(p.getLinkState(self.robotId, self.eef_id)[0][:2])
+        obj_pos_3d, obj_orn = p.getBasePositionAndOrientation(self.objectId)
+        obj_pos = np.array(obj_pos_3d[:2])
+        obj_vel, _ = p.getBaseVelocity(self.objectId)
+        
+        _, _, obj_yaw = p.getEulerFromQuaternion(obj_orn)
 
         # Target position
         target_pos = np.array(self.target_pos[:2])
@@ -292,7 +351,7 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         obj_to_target = target_pos - obj_pos
 
         # Object velocity
-        obj_vel_full, obj_ang_vel_full = p.getBaseVelocity(self.object_id)
+        obj_vel_full, obj_ang_vel_full = p.getBaseVelocity(self.objectId)
         obj_vel = np.array(obj_vel_full[:2])
         obj_angular_vel = obj_ang_vel_full[2]
 
@@ -337,7 +396,7 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
     def _compute_reward(self) -> Tuple[float, bool, bool]:
         """Compute reward, terminated, truncated."""
         # Get positions
-        obj_pos, obj_orn = p.getBasePositionAndOrientation(self.object_id)
+        obj_pos, obj_orn = p.getBasePositionAndOrientation(self.objectId)
         obj_pos = np.array(obj_pos[:2])
         obj_euler = p.getEulerFromQuaternion(obj_orn)
         obj_yaw = obj_euler[2]
@@ -345,7 +404,7 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         target_pos = np.array(self.target_pos[:2])
         target_yaw = self.target_yaw
 
-        ee_pos = np.array(p.getLinkState(self.robot_id, 6)[0][:2])
+        ee_pos = np.array(p.getLinkState(self.robotId, self.eef_id)[0][:2])
 
         # Distances and errors
         dist_obj_target = np.linalg.norm(obj_pos - target_pos)
@@ -424,6 +483,66 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         while angle < -math.pi:
             angle += 2 * math.pi
         return angle
+    
+    def reset_arm(self):
+        for rest_pose, joint_id in zip(self.arm_rest_poses, self.arm_controllable_joints):
+            p.resetJointState(self.robotId, joint_id, rest_pose)
+
+    def move_gripper(self, open_length):
+        # Simplified mimic logic trigger
+        open_angle = 0.715 - math.asin((open_length - 0.010) / 0.1143)
+        p.setJointMotorControl2(self.robotId, self.mimic_parent_id, p.POSITION_CONTROL, targetPosition=open_angle)
+
+    def __parse_joint_info__(self):
+        numJoints = p.getNumJoints(self.robotId)
+        jointInfo = namedtuple('jointInfo', 
+            ['id','name','type','damping','friction','lowerLimit','upperLimit','maxForce','maxVelocity','controllable'])
+        self.joints = []
+        self.controllable_joints = []
+        for i in range(numJoints):
+            info = p.getJointInfo(self.robotId, i)
+            jointID = info[0]
+            jointName = info[1].decode("utf-8")
+            jointType = info[2]  # JOINT_REVOLUTE, JOINT_PRISMATIC, JOINT_SPHERICAL, JOINT_PLANAR, JOINT_FIXED
+            jointDamping = info[6]
+            jointFriction = info[7]
+            jointLowerLimit = info[8]
+            jointUpperLimit = info[9]
+            jointMaxForce = info[10]
+            jointMaxVelocity = info[11]
+            controllable = (jointType != p.JOINT_FIXED)
+            if controllable:
+                self.controllable_joints.append(jointID)
+                p.setJointMotorControl2(self.robotId, jointID, p.VELOCITY_CONTROL, targetVelocity=0, force=0)
+            info = jointInfo(jointID,jointName,jointType,jointDamping,jointFriction,jointLowerLimit,
+                            jointUpperLimit,jointMaxForce,jointMaxVelocity,controllable)
+            self.joints.append(info)
+
+        assert len(self.controllable_joints) >= self.arm_num_dofs
+        self.arm_controllable_joints = self.controllable_joints[:self.arm_num_dofs]
+
+        self.arm_lower_limits = [info.lowerLimit for info in self.joints if info.controllable][:self.arm_num_dofs]
+        self.arm_upper_limits = [info.upperLimit for info in self.joints if info.controllable][:self.arm_num_dofs]
+        self.arm_joint_ranges = [info.upperLimit - info.lowerLimit for info in self.joints if info.controllable][:self.arm_num_dofs]
+
+    def __setup_mimic_joints__(self):
+        mimic_parent_name = 'finger_joint'
+        mimic_children_names = {'right_outer_knuckle_joint': 1,
+                                'left_inner_knuckle_joint': 1,
+                                'right_inner_knuckle_joint': 1,
+                                'left_inner_finger_joint': -1,
+                                'right_inner_finger_joint': -1}
+        self.mimic_parent_id = [joint.id for joint in self.joints if joint.name == mimic_parent_name][0]
+        self.mimic_child_multiplier = {joint.id: mimic_children_names[joint.name] for joint in self.joints if joint.name in mimic_children_names}
+
+        for joint_id, multiplier in self.mimic_child_multiplier.items():
+            c = p.createConstraint(self.robotId, self.mimic_parent_id,
+                                   self.robotId, joint_id,
+                                   jointType=p.JOINT_GEAR,
+                                   jointAxis=[0, 1, 0],
+                                   parentFramePosition=[0, 0, 0],
+                                   childFramePosition=[0, 0, 0])
+            p.changeConstraint(c, gearRatio=-multiplier, maxForce=100, erp=1)  # Note: the mysterious `erp` is of EXTREME importance
 
     def render(self) -> Optional[np.ndarray]:
         """Render the environment."""
@@ -447,12 +566,12 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
     # Debug methods
     def get_ee_position(self) -> np.ndarray:
         """Get current end-effector position."""
-        ee_state = p.getLinkState(self.robot_id, 6)
+        ee_state = p.getLinkState(self.robotId, self.eef_id)
         return np.array(ee_state[0])
 
     def get_object_pose(self) -> Tuple[np.ndarray, float]:
         """Get current object position and yaw angle."""
-        pos, orn = p.getBasePositionAndOrientation(self.object_id)
+        pos, orn = p.getBasePositionAndOrientation(self.objectId)
         euler = p.getEulerFromQuaternion(orn)
         return np.array(pos), euler[2]
 

@@ -35,10 +35,10 @@ class BasePushEnvConfig:
         target_half_extents: Tuple[float, float, float] = (0.06, 0.04, 0.001),
 
         # Spawn ranges
-        object_x_range: Tuple[float, float] = (0.3, 0.5),
-        object_y_range: Tuple[float, float] = (-0.2, 0.2),
-        target_x_range: Tuple[float, float] = (0.7, 0.9),
-        target_y_range: Tuple[float, float] = (-0.3, 0.3),
+        object_r_range: Tuple[float, float] = (0.2, 0.5),
+        object_theta_range: Tuple[float, float] = (-1.57, 0),
+        target_r_range: Tuple[float, float] = (0.5, 0.9),
+        target_theta_range: Tuple[float, float] = (-1.57, 1),
 
         # Reward coefficients
         position_progress_coef: float = 30.0,
@@ -67,10 +67,10 @@ class BasePushEnvConfig:
         self.target_half_extents = target_half_extents
 
         # Spawn ranges
-        self.object_x_range = object_x_range
-        self.object_y_range = object_y_range
-        self.target_x_range = target_x_range
-        self.target_y_range = target_y_range
+        self.object_r_range = object_r_range
+        self.object_theta_range = object_theta_range
+        self.target_r_range = target_r_range
+        self.target_theta_range = target_theta_range
 
         # Reward coefficients
         self.position_progress_coef = position_progress_coef
@@ -106,10 +106,10 @@ class BasePushEnvConfig:
             target_half_extents=tuple(env_cfg.get("target_half_extents", [0.06, 0.04, 0.001])),
 
             # Spawn ranges
-            object_x_range=tuple(env_cfg.get("object_x_range", [0.3, 0.5])),
-            object_y_range=tuple(env_cfg.get("object_y_range", [-0.2, 0.2])),
-            target_x_range=tuple(env_cfg.get("target_x_range", [0.7, 0.9])),
-            target_y_range=tuple(env_cfg.get("target_y_range", [-0.3, 0.3])),
+            object_r_range=tuple(env_cfg.get("object_r_range", [0.2, 0.5])),
+            object_theta_range=tuple(env_cfg.get("object_theta_range", [-1.57, 0])),
+            target_r_range=tuple(env_cfg.get("target_r_range", [0.5, 0.9])),
+            target_theta_range=tuple(env_cfg.get("target_theta_range", [-1.57, 1])),
 
             # Reward coefficients
             position_progress_coef=reward_cfg.get("position_progress_coef", 30.0),
