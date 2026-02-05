@@ -69,6 +69,10 @@ def parse_args():
     # Output
     parser.add_argument("--output-dir", type=str, default=None,
                         help="Output directory (default: auto-generated)")
+    
+    # Test mode
+    parser.add_argument("--test", action="store_true",
+                        help="Run in test mode (no training)")
 
     return parser.parse_args()
 
@@ -262,6 +266,7 @@ def create_env(args, cfg, vecnorm_path=None):
         n_envs=args.n_envs,
         obs_type=args.obs_type,
         device=device,
+        render_mode="human" if args.test else None,
     )
 
     # For PyBullet with state obs, load VecNormalize if available
@@ -496,6 +501,8 @@ def test_env(args):
 
 if __name__ == "__main__":
     args = parse_args()
-    # test_env(args)
-    train(args)
+    if args.test:
+        test_env(args)
+    else:
+        train(args)
 

@@ -41,6 +41,7 @@ class BasePushEnvConfig:
         target_theta_range: Tuple[float, float] = (-1.57, 1),
 
         # Reward coefficients
+        distance_coef: float = 1.0,
         position_progress_coef: float = 30.0,
         orientation_progress_coef: float = 15.0,
         coupling_coef: float = 20.0,
@@ -73,6 +74,7 @@ class BasePushEnvConfig:
         self.target_theta_range = target_theta_range
 
         # Reward coefficients
+        self.distance_coef = distance_coef
         self.position_progress_coef = position_progress_coef
         self.orientation_progress_coef = orientation_progress_coef
         self.coupling_coef = coupling_coef
@@ -112,6 +114,7 @@ class BasePushEnvConfig:
             target_theta_range=tuple(env_cfg.get("target_theta_range", [-1.57, 1])),
 
             # Reward coefficients
+            distance_coef=reward_cfg.get("distance_coef", 1.0),
             position_progress_coef=reward_cfg.get("position_progress_coef", 30.0),
             orientation_progress_coef=reward_cfg.get("orientation_progress_coef", 15.0),
             coupling_coef=reward_cfg.get("coupling_coef", 20.0),

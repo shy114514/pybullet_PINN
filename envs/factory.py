@@ -118,6 +118,7 @@ def make_vec_env(
     device: str = "cpu",
     vec_env_cls: Optional[type] = None,
     max_episode_steps: Optional[int] = None,
+    render_mode: Optional[str] = None,
 ) -> Any:
     """Create vectorized push task environments.
 
@@ -154,7 +155,7 @@ def make_vec_env(
         def make_env_fn():
             env = PyBulletPushEnv(
                 cfg=cfg,
-                render_mode=None,
+                render_mode=render_mode,
                 obs_type=obs_type,
             )
             env = TimeLimit(env, max_episode_steps=cfg.max_episode_steps)

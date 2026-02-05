@@ -412,14 +412,23 @@ def evaluate(args):
     # Load config
     if args.config:
         cfg = load_config_from_yaml(args.config)
+        print(f"Loaded config from {args.config}")
     else:
         # Try to load from model directory
-        model_dir = os.path.dirname(model_path) if os.path.isfile(model_path) else model_path
-        config_in_dir = os.path.join(model_dir, "config_used.yaml")
-        if os.path.exists(config_in_dir):
-            cfg = load_config_from_yaml(config_in_dir)
-        else:
+        config_dir = os.path.dirname(model_path) if os.path.isfile(model_path) else model_path
+        config_path = os.path.join(config_dir, "config_used.yaml")
+        flag = False
+        for _ in range(4):
+            if os.path.exists(config_path):
+                cfg = load_config_from_yaml(config_path)
+                print(f"Loaded config from {config_path}")
+                flag = True
+                break
+            config_dir = os.path.dirname(config_dir)
+            config_path = os.path.join(config_dir, "config_used.yaml")
+        if not flag:
             cfg = BasePushEnvConfig()
+            print("Using default environment config.")
 
     # Output directory
     model_dir = os.path.dirname(model_path) if os.path.isfile(model_path) else model_path

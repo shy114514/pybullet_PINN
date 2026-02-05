@@ -10,16 +10,16 @@ env:
   orientation_threshold: 3.14    # Orientation threshold for success (rad, ~180 degrees)
 
   # Object and target dimensions (half extents)
-  object_half_extents: [0.06, 0.04, 0.05]   # Object box half size (x, y, z) in meters
+  object_half_extents: [0.06, 0.04, 0.025]   # Object box half size (x, y, z) in meters
   target_half_extents: [0.06, 0.04, 0.001] # Target visual half size (x, y, z) in meters
 
   # Object spawn range
-  object_r_range: [0.25, 0.6]
-  object_theta_range: [-1.2, -0.2]
+  object_r_range: [0.5, 0.6]
+  object_theta_range: [-0.8, -0.2]
 
   # Target spawn range
-  target_r_range: [0.5, 0.9]
-  target_theta_range: [-1.57, -0.4]  # Around pi (opposite side)
+  target_r_range: [0.65, 0.75]
+  target_theta_range: [-0.8, 0.]  # Around pi (opposite side)
 
   # Fixed EE initial position (set to avoid collision with object)
   # Object x_range is [0.3, 0.5], so EE at x=0.15 is safely behind
@@ -28,9 +28,10 @@ env:
 # Reward settings (一阶段训练：同时学习位置和方向)
 reward:
   # 进度奖励系数（增量式）
-  position_progress_coef: 50.0     # 位置进度奖励系数（提高权重）
-  orientation_progress_coef: 30.0  # 方向进度奖励系数（提高权重）
-  coupling_coef: 40.0              # 耦合奖励系数（两者同时改进时的bonus，提高以鼓励协同）
+  distance_coef: 0.05               # 位置距离奖励系数（取消）
+  position_progress_coef: 5.0     # 位置进度奖励系数（提高权重）
+  orientation_progress_coef: 3.0  # 方向进度奖励系数（提高权重）
+  coupling_coef: 4.0              # 耦合奖励系数（两者同时改进时的bonus，提高以鼓励协同）
   alignment_coef: 0.0              # 推动方向对齐奖励系数（取消）
 
   # EE接近物体的奖励
@@ -39,7 +40,7 @@ reward:
   first_contact_bonus: 15.0        # 首次接触一次性奖励（提高，补偿稀疏问题）
 
   # 成功奖励和步数惩罚
-  success_bonus: 150.0             # 成功到达目标的奖励（提高）
+  success_bonus: 100.0             # 成功到达目标的奖励（提高）
   step_penalty: -0.01              # 每步惩罚（鼓励尽快完成）
 
 # Training settings
@@ -80,7 +81,7 @@ evaluation:
   # Video settings
   video:
     enabled: false
-    frame_skip: 1               # Capture every step (1 step = 0.1s physical time)
+    frame_skip: 10              # Capture every step (1 step = 0.1s physical time)
     fps: 10                     # 10 fps = 1:1 realtime (each step is 0.1s)
     width: 320
     height: 240

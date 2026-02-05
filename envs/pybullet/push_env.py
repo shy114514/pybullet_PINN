@@ -50,6 +50,7 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         super().__init__(cfg, render_mode, obs_type, num_envs=1, device="cpu")
 
 
+        print(vars(cfg))
         self.asset_dir = r"C:\Users\Lenovo\projects\robotrl\envs\assets"
         self.fixed_ee_z = self.cfg.fixed_ee_z
         # Ranges
@@ -128,65 +129,89 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         self.__setup_mimic_joints__()
 
     def _create_dynamic_actors(self):
-        # --- 尺寸定义 (与原代码一致) ---
-        base_half_extents = [0.1, 0.025, 0.025]  # 横杠
-        link_half_extents = [0.025, 0.075, 0.025] # 竖杠
-        link_pos = [0, -0.1, 0] 
-
-        # ==================================
-        # 1. 创建可操作物体 (红色 T 形块)
-        # ==================================
-        baseCol = p.createCollisionShape(p.GEOM_BOX, halfExtents=base_half_extents)
-        baseVis = p.createVisualShape(p.GEOM_BOX, halfExtents=base_half_extents, rgbaColor=[0.8, 0.1, 0.1, 1])
         
-        linkCol = p.createCollisionShape(p.GEOM_BOX, halfExtents=link_half_extents)
-        linkVis = p.createVisualShape(p.GEOM_BOX, halfExtents=link_half_extents, rgbaColor=[0.8, 0.1, 0.1, 1])
-        
+        p.setAdditionalSearchPath(self.asset_dir)
+        obj_col = p.createCollisionShape(p.GEOM_MESH, fileName="object.obj")
+        obj_vis = p.createVisualShape(p.GEOM_MESH, fileName="object.obj", rgbaColor=[0.8, 0.2, 0.2, 1])
         self.objectId = p.createMultiBody(
             baseMass=0.5,
-            baseCollisionShapeIndex=baseCol,
-            baseVisualShapeIndex=baseVis,
+            baseCollisionShapeIndex=obj_col,
+            baseVisualShapeIndex=obj_vis,
             basePosition=[0, 0, 0.025],
-            linkMasses=[0.5],
-            linkCollisionShapeIndices=[linkCol],
-            linkVisualShapeIndices=[linkVis],
-            linkPositions=[link_pos],
-            linkOrientations=[[0, 0, 0, 1]],
-            linkInertialFramePositions=[[0, 0, 0]],
-            linkInertialFrameOrientations=[[0, 0, 0, 1]],
-            linkParentIndices=[0],
-            linkJointTypes=[p.JOINT_FIXED],
-            linkJointAxis=[[0, 0, 0]]
+            baseOrientation=p.getQuaternionFromEuler([0, 0, 0])
         )
-
         p.changeDynamics(self.objectId, -1, lateralFriction=0.6, spinningFriction=0.1)
-        p.changeDynamics(self.objectId, 0, lateralFriction=0.6, spinningFriction=0.1)
 
-        # ==================================
-        # 2. 创建目标 (半透明绿色 T 形块 Ghost)
-        # ==================================
-        # 注意：Target 不需要 CollisionShape (设为 -1)，以免物理干扰
-        # 颜色设置为半透明绿色 (Alpha=0.3)
-        targetBaseVis = p.createVisualShape(p.GEOM_BOX, halfExtents=base_half_extents, rgbaColor=[0, 1, 0, 0.3])
-        targetLinkVis = p.createVisualShape(p.GEOM_BOX, halfExtents=link_half_extents, rgbaColor=[0, 1, 0, 0.3])
 
+        target_col = -1  # No collision for target
+        target_vis = p.createVisualShape(p.GEOM_MESH, fileName="object.obj", rgbaColor=[0, 1, 0, 0.3])
         self.targetId = p.createMultiBody(
-            baseMass=0, # 静态物体
-            baseCollisionShapeIndex=-1, # 无碰撞
-            baseVisualShapeIndex=targetBaseVis,
+            baseMass=0,
+            baseCollisionShapeIndex=target_col,
+            baseVisualShapeIndex=target_vis,
             basePosition=[0, 0, 0],
-            # 必须构建完全相同的 Link 结构，才能在视觉上成为 T 形
-            linkMasses=[0],
-            linkCollisionShapeIndices=[-1], # 无碰撞
-            linkVisualShapeIndices=[targetLinkVis],
-            linkPositions=[link_pos],
-            linkOrientations=[[0, 0, 0, 1]],
-            linkInertialFramePositions=[[0, 0, 0]],
-            linkInertialFrameOrientations=[[0, 0, 0, 1]],
-            linkParentIndices=[0],
-            linkJointTypes=[p.JOINT_FIXED],
-            linkJointAxis=[[0, 0, 0]]
+            baseOrientation=p.getQuaternionFromEuler([0, 0, 0])
         )
+
+        # # --- 尺寸定义 (与原代码一致) ---
+        # base_half_extents = [0.1, 0.025, 0.025]  # 横杠
+        # link_half_extents = [0.025, 0.075, 0.025] # 竖杠
+        # link_pos = [0, -0.1, 0] 
+
+        # # ==================================
+        # # 1. 创建可操作物体 (红色 T 形块)
+        # # ==================================
+        # baseCol = p.createCollisionShape(p.GEOM_BOX, halfExtents=base_half_extents)
+        # baseVis = p.createVisualShape(p.GEOM_BOX, halfExtents=base_half_extents, rgbaColor=[0.8, 0.1, 0.1, 1])
+        
+        # linkCol = p.createCollisionShape(p.GEOM_BOX, halfExtents=link_half_extents)
+        # linkVis = p.createVisualShape(p.GEOM_BOX, halfExtents=link_half_extents, rgbaColor=[0.8, 0.1, 0.1, 1])
+        
+        # self.objectId = p.createMultiBody(
+        #     baseMass=0.5,
+        #     baseCollisionShapeIndex=baseCol,
+        #     baseVisualShapeIndex=baseVis,
+        #     basePosition=[0, 0, 0.025],
+        #     linkMasses=[0.5],
+        #     linkCollisionShapeIndices=[linkCol],
+        #     linkVisualShapeIndices=[linkVis],
+        #     linkPositions=[link_pos],
+        #     linkOrientations=[[0, 0, 0, 1]],
+        #     linkInertialFramePositions=[[0, 0, 0]],
+        #     linkInertialFrameOrientations=[[0, 0, 0, 1]],
+        #     linkParentIndices=[0],
+        #     linkJointTypes=[p.JOINT_FIXED],
+        #     linkJointAxis=[[0, 0, 0]]
+        # )
+
+        # p.changeDynamics(self.objectId, -1, lateralFriction=0.6, spinningFriction=0.1)
+        # p.changeDynamics(self.objectId, 0, lateralFriction=0.6, spinningFriction=0.1)
+
+        # # ==================================
+        # # 2. 创建目标 (半透明绿色 T 形块 Ghost)
+        # # ==================================
+        # # 注意：Target 不需要 CollisionShape (设为 -1)，以免物理干扰
+        # # 颜色设置为半透明绿色 (Alpha=0.3)
+        # targetBaseVis = p.createVisualShape(p.GEOM_BOX, halfExtents=base_half_extents, rgbaColor=[0, 1, 0, 0.3])
+        # targetLinkVis = p.createVisualShape(p.GEOM_BOX, halfExtents=link_half_extents, rgbaColor=[0, 1, 0, 0.3])
+
+        # self.targetId = p.createMultiBody(
+        #     baseMass=0, # 静态物体
+        #     baseCollisionShapeIndex=-1, # 无碰撞
+        #     baseVisualShapeIndex=targetBaseVis,
+        #     basePosition=[0, 0, 0],
+        #     # 必须构建完全相同的 Link 结构，才能在视觉上成为 T 形
+        #     linkMasses=[0],
+        #     linkCollisionShapeIndices=[-1], # 无碰撞
+        #     linkVisualShapeIndices=[targetLinkVis],
+        #     linkPositions=[link_pos],
+        #     linkOrientations=[[0, 0, 0, 1]],
+        #     linkInertialFramePositions=[[0, 0, 0]],
+        #     linkInertialFrameOrientations=[[0, 0, 0, 1]],
+        #     linkParentIndices=[0],
+        #     linkJointTypes=[p.JOINT_FIXED],
+        #     linkJointAxis=[[0, 0, 0]]
+        # )
 
     def _setup_cameras(self):
         """Set up camera matrices for rendering."""
@@ -277,7 +302,6 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         self.prev_dist_obj_target = None
         self.prev_dist_ee_obj = None
         self.prev_ang_dist = None
-
         return self._get_obs(), {}
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
@@ -431,6 +455,9 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
 
         # Reward components
         reward = self.cfg.step_penalty
+
+        # Distance penalty
+        reward += - self.cfg.distance_coef * np.tanh(dist_ee_obj)
 
         # Position progress
         reward += delta_dist_target * self.cfg.position_progress_coef
