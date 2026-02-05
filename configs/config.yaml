@@ -5,8 +5,8 @@
 # Environment settings
 env:
   max_episode_steps: 200        # Maximum steps per episode
-  fixed_ee_z: 0.2               # Fixed end-effector height (m)
-  success_threshold: 0.05       # Distance threshold for success (m)
+  fixed_ee_z: 0.001               # Fixed end-effector height (m)
+  success_threshold: 0.03       # Distance threshold for success (m)
   orientation_threshold: 3.14    # Orientation threshold for success (rad, ~180 degrees)
 
   # Object and target dimensions (half extents)
@@ -31,7 +31,7 @@ reward:
   distance_coef: 0.05               # 位置距离奖励系数（取消）
   position_progress_coef: 5.0     # 位置进度奖励系数（提高权重）
   orientation_progress_coef: 3.0  # 方向进度奖励系数（提高权重）
-  coupling_coef: 4.0              # 耦合奖励系数（两者同时改进时的bonus，提高以鼓励协同）
+  coupling_coef: 0.0              # 耦合奖励系数（两者同时改进时的bonus，提高以鼓励协同）
   alignment_coef: 0.0              # 推动方向对齐奖励系数（取消）
 
   # EE接近物体的奖励

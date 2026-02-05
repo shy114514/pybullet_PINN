@@ -78,23 +78,61 @@ def parse_args():
 
 
 class ProgressBarCallback(BaseCallback):
-    """Progress bar callback with training metrics."""
+    """Progress bar callback with training metrics, including Rollout/Train timing."""
 
-    def __init__(self, total_timesteps: int, update_freq: int = 32768, verbose=0):
+    def __init__(self, total_timesteps: int, update_freq: int = 32768, verbose=0, curriculum_threshold: float = 0.8):
         super().__init__(verbose)
         self.total_timesteps = total_timesteps
         self.update_freq = update_freq
         self.start_time = None
         self.episode_rewards = []
         self.episode_lengths = []
+        self.episode_is_success = []
         self.last_update_step = 0
+        self.curriculum_threshold = curriculum_threshold
+        
+        self.t_rollout_start = 0.0
+        self.t_rollout_end = 0.0
+        self.last_rollout_dt = 0.0 
+        self.last_train_dt = 0.0 
 
     def _on_training_start(self):
         self.start_time = time.time()
+        self.t_rollout_end = time.time() 
         self.initial_timesteps = self.model.num_timesteps
         self.target_timesteps = self.initial_timesteps + self.total_timesteps
         self.last_update_step = self.initial_timesteps
-        print("\n" * 6)
+        print("\n" * 7) # 预留行数增加到7行以适应新的UI
+        self.logger.record("curriculum/difficulty", 0)
+
+    def _on_rollout_start(self) -> None:
+        now = time.time()
+        # 计算训练耗时：当前时间 - 上一次Rollout结束时间
+        if self.t_rollout_end > 0:
+            self.last_train_dt = now - self.t_rollout_end
+        
+        self.t_rollout_start = now
+
+        success_rate = (np.mean(self.episode_is_success[-100:])) if self.episode_is_success else 0.0
+        if success_rate > self.curriculum_threshold:
+            try:
+                difficulty = self.training_env.get_attr('difficulty')[0]
+                if difficulty >= 13:
+                    self.logger.record("curriculum/difficulty", difficulty)
+                    return
+                difficulty += 1
+                self.logger.record("curriculum/difficulty", difficulty)
+                self.training_env.set_attr('difficulty', difficulty)
+            except Exception:
+                pass
+
+    def _on_rollout_end(self) -> None:
+        now = time.time()
+        # 计算Rollout耗时：当前时间 - 本次Rollout开始时间
+        if self.t_rollout_start > 0:
+            self.last_rollout_dt = now - self.t_rollout_start
+        
+        self.t_rollout_end = now
 
     def _on_step(self) -> bool:
         infos = self.locals.get("infos", [])
@@ -102,6 +140,7 @@ class ProgressBarCallback(BaseCallback):
             if "episode" in info:
                 self.episode_rewards.append(info["episode"]["r"])
                 self.episode_lengths.append(info["episode"]["l"])
+                self.episode_is_success.append(info["episode"]['is_success'])
 
         if self.num_timesteps - self.last_update_step >= self.update_freq:
             self._update_progress_bar()
@@ -138,13 +177,15 @@ class ProgressBarCallback(BaseCallback):
             reward_str = "N/A"
             length_str = "N/A"
 
+        rollout_str = f"{self.last_rollout_dt:.1f}s"
+        train_str = f"{self.last_train_dt:.1f}s"
+
         bar_length = 40
         filled_length = int(bar_length * progress)
         bar = "█" * filled_length + "░" * (bar_length - filled_length)
 
         elapsed_str = self._format_time(elapsed_time)
 
-        sys.stdout.write("\033[6A\033[J")
 
         status_lines = [
             f"╔{'═' * 58}╗",
@@ -152,9 +193,15 @@ class ProgressBarCallback(BaseCallback):
             f"╠{'═' * 58}╣",
             f"║  Steps: {steps_done:>10,} / {self.total_timesteps:<10,} (Total: {current_steps:,}) ║",
             f"║  FPS: {fps_str:>8}  │  Elapsed: {elapsed_str}  │  ETA: {eta_str}  ║",
-            f"║  Reward: {reward_str:>8}  │  EpLen: {length_str:>8}  │  Episodes: {len(self.episode_rewards):<6} ║",
+            f"║  Reward: {reward_str:>8}  │  EpLen: {length_str:>8}  │  Eps: {len(self.episode_rewards):<7} ║",
+            f"║  Rollout: {rollout_str:>7}  │  Train: {train_str:>9}  │ {'Running...':<13} ║", 
             f"╚{'═' * 58}╝",
         ]
+        
+        # 移动光标并清除下方内容
+        # move_up_lines 应该等于 len(status_lines) - 1 (因为最后print自带一个换行)
+        move_up_lines = len(status_lines) - 1 
+        sys.stdout.write(f"\033[{move_up_lines}A\033[J")
 
         sys.stdout.write("\n".join(status_lines) + "\n")
         sys.stdout.flush()
@@ -246,12 +293,7 @@ def resolve_checkpoint_path(checkpoint_path: str):
 
 def get_device(args):
     """Determine device to use."""
-    if args.device == "auto":
-        if args.backend == "isaac_lab":
-            return "cuda"
-        else:
-            return "cpu"
-    return args.device
+    return "cuda" if args.backend == "isaac_lab" else args.device
 
 
 def create_env(args, cfg, vecnorm_path=None):
@@ -287,7 +329,8 @@ def create_callbacks(args, config, env, n_envs):
     progress_callback = ProgressBarCallback(
         total_timesteps=args.timesteps,
         update_freq=32768,
-        verbose=1
+        verbose=1,
+        curriculum_threshold=0.8,
     )
     callbacks.append(progress_callback)
 
@@ -407,6 +450,7 @@ def train(args):
 
     # Determine device
     device = get_device(args)
+    print(f"Using device: {device}")
 
     # Create or load model
     if model_path:

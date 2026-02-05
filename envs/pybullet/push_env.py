@@ -51,6 +51,7 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
 
 
         print(vars(cfg))
+        self.difficulty = 0
         self.asset_dir = r"C:\Users\Lenovo\projects\robotrl\envs\assets"
         self.fixed_ee_z = self.cfg.fixed_ee_z
         # Ranges
@@ -86,10 +87,6 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         self.frame_skip = 24   # Control step: 240Hz / 24 = 10Hz control
         p.setTimeStep(self.dt)
 
-        # State tracking for incremental rewards
-        self.prev_dist_obj_target = None
-        self.prev_dist_ee_obj = None
-        self.prev_yaw_error = None
         self.step_count = 0
 
         # Target pose (set in reset)
@@ -108,31 +105,74 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         self.planeId = p.loadURDF("plane.urdf")
         
-        # Robot
-        p.setAdditionalSearchPath(self.asset_dir)
-        base_pos = (0, 0, 0)
-        base_ori = p.getQuaternionFromEuler((0, 0, 0))
-        # Ensure file exists or handle error
-        try:
-            self.robotId = p.loadURDF("urdf/ur5_robotiq_85.urdf", base_pos, base_ori, useFixedBase=True)
-        except Exception as e:
-            print(f"Error loading robot URDF from {self.asset_dir}: {e}")
-            raise e
+        # # Robot
+        # p.setAdditionalSearchPath(self.asset_dir)
+        # base_pos = (0, 0, 0)
+        # base_ori = p.getQuaternionFromEuler((0, 0, 0))
+        # # Ensure file exists or handle error
+        # try:
+        #     self.robotId = p.loadURDF("urdf/ur5_robotiq_85.urdf", base_pos, base_ori, useFixedBase=True)
+        # except Exception as e:
+        #     print(f"Error loading robot URDF from {self.asset_dir}: {e}")
+        #     raise e
 
-        self.eef_id = 7
-        self.fixed_orientation = p.getQuaternionFromEuler([0, math.pi/2, 0])
+        # self.eef_id = 7
+        # self.fixed_orientation = p.getQuaternionFromEuler([0, math.pi/2, 0])
         
-        # Joint setup
-        self.arm_num_dofs = 6
-        self.arm_rest_poses = [-1.57, -1.54, 1.34, -1.37, -1.57, 0.0]
-        self.__parse_joint_info__()
-        self.__setup_mimic_joints__()
+        # # Joint setup
+        # self.arm_num_dofs = 6
+        # self.arm_rest_poses = [-1.57, -1.54, 1.34, -1.37, -1.57, 0.0]
+        # self.__parse_joint_info__()
+        # self.__setup_mimic_joints__()
 
     def _create_dynamic_actors(self):
         
+        self.ee_pos = np.array([0, 0, self.fixed_ee_z])
+        radius = 0.005
+        length = 0.05
+        mass = 100
+
+        ee_vis = p.createVisualShape(
+            shapeType=p.GEOM_CYLINDER,
+            radius=radius,
+            length=length,
+            rgbaColor=[0.8, 0.2, 0.2, 1],
+            specularColor=[0.4, 0.4, 0],
+            visualFramePosition=[0, 0, length/2]
+        )
+        ee_col = p.createCollisionShape(
+            shapeType=p.GEOM_CYLINDER,
+            radius=radius,
+            height=length,
+            collisionFramePosition=[0, 0, length/2]
+        )
+
+        self.eeId = p.createMultiBody(
+            baseMass=mass,
+            baseCollisionShapeIndex=ee_col,
+            baseVisualShapeIndex=ee_vis,
+            basePosition=self.ee_pos,  # 初始位置
+            baseOrientation=p.getQuaternionFromEuler([0, 0, 0]) # 默认 Z 轴朝上
+        )
+        p.changeDynamics(self.eeId, -1, lateralFriction=0.8)
+        
+        self.constraintId = p.createConstraint(
+            parentBodyUniqueId=self.eeId,
+            parentLinkIndex=-1,
+            childBodyUniqueId=-1, # -1 代表世界坐标系
+            childLinkIndex=-1,
+            jointType=p.JOINT_FIXED,
+            jointAxis=[0, 0, 0],
+            parentFramePosition=[0, 0, 0],
+            childFramePosition=self.ee_pos # 初始目标位置
+        )
+
+        # 物体尺寸：长0.1，宽0.066 高0.026，原点位于中心
+        obj_center2mass_center = [0, -0.02, 0]
+        shift = obj_center2mass_center
         p.setAdditionalSearchPath(self.asset_dir)
-        obj_col = p.createCollisionShape(p.GEOM_MESH, fileName="object.obj")
-        obj_vis = p.createVisualShape(p.GEOM_MESH, fileName="object.obj", rgbaColor=[0.8, 0.2, 0.2, 1])
+        obj_col = p.createCollisionShape(p.GEOM_MESH, fileName="object.obj", collisionFramePosition=shift)
+        obj_vis = p.createVisualShape(p.GEOM_MESH, fileName="object.obj", rgbaColor=[0.8, 0.2, 0.2, 1], visualFramePosition=shift)
         self.objectId = p.createMultiBody(
             baseMass=0.5,
             baseCollisionShapeIndex=obj_col,
@@ -254,13 +294,7 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         super().reset(seed=seed)
         self.step_count = 0
 
-        # Reset reward tracking
-        self.prev_dist_obj_target = None
-        self.prev_dist_ee_obj = None
-        self.prev_yaw_error = None
-
-        self.reset_arm()
-        self.move_gripper(0.0)
+        self.orientation_threshold = self.cfg.orientation_threshold * (3/4)**self.difficulty
 
         center_x, center_y = 0., 0.
 
@@ -273,10 +307,10 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         object_y = center_y + obj_r * np.sin(obj_theta)
         object_yaw = self.np_random.uniform(-np.pi, np.pi)
         
-        self.object_pos = [object_x, object_y, 0.025]
-        orn = p.getQuaternionFromEuler([0, 0, object_yaw])
+        obj_pos = [object_x, object_y, 0.025]
+        obj_orn = p.getQuaternionFromEuler([0, 0, object_yaw])
         
-        p.resetBasePositionAndOrientation(self.objectId, self.object_pos, orn)
+        p.resetBasePositionAndOrientation(self.objectId, obj_pos, obj_orn)
         p.resetBaseVelocity(self.objectId, [0,0,0], [0,0,0])
 
         # --- 2. 重置目标 (Target) ---
@@ -299,36 +333,34 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         for _ in range(20): p.stepSimulation()
         
         # Init Reward Vars
-        self.prev_dist_obj_target = None
-        self.prev_dist_ee_obj = None
-        self.prev_ang_dist = None
+        obj_pos = np.array(obj_pos[:2])
+        obj_euler = p.getEulerFromQuaternion(obj_orn)
+        obj_yaw = obj_euler[2]
+        target_pos = np.array(self.target_pos[:2])
+        target_yaw = self.target_yaw
+        ee_pos = self.get_ee_position()[:2]
+
+        self.prev_dist_obj_target = np.linalg.norm(obj_pos - target_pos)
+        self.prev_dist_ee_obj = np.linalg.norm(ee_pos - obj_pos)
+        self.prev_yaw_error = abs(self._normalize_angle(target_yaw - obj_yaw))
+
         return self._get_obs(), {}
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Execute one environment step."""
         # Scale action
         dx, dy = action * 0.1
-
-        # Get Current EE Pos (Fast retrieval)
-        current_ee_state = p.getLinkState(self.robotId, self.eef_id)
-        current_ee_pos = current_ee_state[0]
-        
-        # Target Position
-        new_ee_pos = [current_ee_pos[0] + dx, current_ee_pos[1] + dy, self.fixed_ee_z]
-
-        # IK Calculation
-        joint_poses = p.calculateInverseKinematics(
-            self.robotId, self.eef_id, new_ee_pos, self.fixed_orientation,
-            self.arm_lower_limits, self.arm_upper_limits, self.arm_joint_ranges, self.arm_rest_poses,
-            maxNumIterations=10 # Reduced iterations for speed, usually enough for small deltas
-        )
-        
-        # Motor Control
-        for i, joint_id in enumerate(self.arm_controllable_joints):
-            p.setJointMotorControl2(self.robotId, joint_id, p.POSITION_CONTROL, joint_poses[i], force=self.joints[joint_id].maxForce)
+        dx = np.clip(dx, -1. - self.ee_pos[0], 1. - self.ee_pos[0])
+        dy = np.clip(dy, -1. - self.ee_pos[1], 1. - self.ee_pos[1])
+        dx = dx / self.frame_skip
+        dy = dy / self.frame_skip
+        target_ee_pos = self.ee_pos.copy()
 
         # Physics Stepping (Frame Skip)
-        for _ in range(self.frame_skip):
+        for i in range(self.frame_skip):
+            target_ee_pos[0] += dx
+            target_ee_pos[1] += dy
+            p.changeConstraint(self.constraintId, target_ee_pos)
             p.stepSimulation()
             # Enforce flat object constraint simply by re-asserting Z/Orientation IF necessary
             # But relying on correct friction/inertia is better physics.
@@ -343,8 +375,10 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         # Observation & Reward
         obs = self._get_obs()
         reward, terminated, truncated = self._compute_reward()
+        info = {}
+        info['is_success'] = terminated
 
-        return obs, reward, terminated, truncated, {}
+        return obs, reward, terminated, truncated, info
     
     def _angle_normalize(self, angle):
         """将角度归一化到 [-pi, pi]"""
@@ -359,7 +393,8 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
 
     def _get_state_obs(self) -> np.ndarray:
         """Get 19D state observation."""
-        ee_pos = np.array(p.getLinkState(self.robotId, self.eef_id)[0][:2])
+        self.ee_pos = self.get_ee_position()
+        ee_pos = self.ee_pos[:2]
         obj_pos_3d, obj_orn = p.getBasePositionAndOrientation(self.objectId)
         obj_pos = np.array(obj_pos_3d[:2])
         obj_vel, _ = p.getBaseVelocity(self.objectId)
@@ -428,20 +463,12 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         target_pos = np.array(self.target_pos[:2])
         target_yaw = self.target_yaw
 
-        ee_pos = np.array(p.getLinkState(self.robotId, self.eef_id)[0][:2])
+        ee_pos = self.get_ee_position()[:2]
 
         # Distances and errors
         dist_obj_target = np.linalg.norm(obj_pos - target_pos)
         dist_ee_obj = np.linalg.norm(ee_pos - obj_pos)
         yaw_error = abs(self._normalize_angle(target_yaw - obj_yaw))
-
-        # Initialize previous values
-        if self.prev_dist_obj_target is None:
-            self.prev_dist_obj_target = dist_obj_target
-        if self.prev_dist_ee_obj is None:
-            self.prev_dist_ee_obj = dist_ee_obj
-        if self.prev_yaw_error is None:
-            self.prev_yaw_error = yaw_error
 
         # Incremental changes
         delta_dist_target = self.prev_dist_obj_target - dist_obj_target
@@ -493,7 +520,7 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         # Success check
         terminated = False
         position_success = dist_obj_target < self.cfg.success_threshold
-        orientation_success = yaw_error < self.cfg.orientation_threshold
+        orientation_success = yaw_error < self.orientation_threshold
 
         if position_success and orientation_success:
             reward += self.cfg.success_bonus
@@ -593,7 +620,7 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
     # Debug methods
     def get_ee_position(self) -> np.ndarray:
         """Get current end-effector position."""
-        ee_state = p.getLinkState(self.robotId, self.eef_id)
+        ee_state = p.getBasePositionAndOrientation(self.eeId)
         return np.array(ee_state[0])
 
     def get_object_pose(self) -> Tuple[np.ndarray, float]:

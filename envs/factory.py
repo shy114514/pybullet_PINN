@@ -161,7 +161,7 @@ def make_vec_env(
             env = TimeLimit(env, max_episode_steps=cfg.max_episode_steps)
             return env
 
-        env = sb3_make_vec_env(make_env_fn, n_envs=n_envs, vec_env_cls=vec_env_cls)
+        env = sb3_make_vec_env(make_env_fn, n_envs=n_envs, vec_env_cls=vec_env_cls, monitor_kwargs={"info_keywords": ("is_success",)})
 
         # Apply VecNormalize for state observations
         if obs_type == "state":
