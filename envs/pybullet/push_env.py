@@ -52,6 +52,8 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
 
         print(vars(cfg))
         self.difficulty = 0
+        self.distance_threshold = self.cfg.success_threshold
+        self.orientation_threshold = self.cfg.orientation_threshold
         self.asset_dir = r"C:\Users\Lenovo\projects\robotrl\envs\assets"
         self.fixed_ee_z = self.cfg.fixed_ee_z
         # Ranges
@@ -180,7 +182,7 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
             basePosition=[0, 0, 0.025],
             baseOrientation=p.getQuaternionFromEuler([0, 0, 0])
         )
-        p.changeDynamics(self.objectId, -1, lateralFriction=0.6, spinningFriction=0.1)
+        p.changeDynamics(self.objectId, -1, lateralFriction=0.6, spinningFriction=0.01)
 
 
         target_col = -1  # No collision for target
@@ -294,8 +296,6 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         super().reset(seed=seed)
         self.step_count = 0
 
-        self.orientation_threshold = self.cfg.orientation_threshold * (3/4)**self.difficulty
-
         center_x, center_y = 0., 0.
 
         # --- 1. 重置物体 (Object) ---
@@ -380,6 +380,11 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
 
         return obs, reward, terminated, truncated, info
     
+    def set_difficulty(self, difficulty: int):
+        self.difficulty = difficulty
+        self.distance_threshold = self.cfg.success_threshold * (0.92)**self.difficulty
+        self.orientation_threshold = self.cfg.orientation_threshold * (3/4)**self.difficulty
+
     def _angle_normalize(self, angle):
         """将角度归一化到 [-pi, pi]"""
         return (angle + np.pi) % (2 * np.pi) - np.pi
@@ -519,7 +524,7 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
 
         # Success check
         terminated = False
-        position_success = dist_obj_target < self.cfg.success_threshold
+        position_success = dist_obj_target < self.distance_threshold
         orientation_success = yaw_error < self.orientation_threshold
 
         if position_success and orientation_success:

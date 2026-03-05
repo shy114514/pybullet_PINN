@@ -122,7 +122,7 @@ class ProgressBarCallback(BaseCallback):
                     return
                 difficulty += 1
                 self.logger.record("curriculum/difficulty", difficulty)
-                self.training_env.set_attr('difficulty', difficulty)
+                self.training_env.env_method("set_difficulty", difficulty)
             except Exception:
                 pass
 
@@ -389,7 +389,7 @@ def get_training_config(args, cfg):
         config["ppo_kwargs"] = {
             "learning_rate": 0.0001,
             "n_steps": 2048,
-            "batch_size": 64,
+            "batch_size": 256,
             "n_epochs": 10,
             "gamma": 0.99,
             "gae_lambda": 0.95,
