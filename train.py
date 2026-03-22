@@ -26,11 +26,12 @@ from datetime import datetime
 import time
 import glob
 import re
+import csv
 
 import numpy as np
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import VecNormalize
+from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv, sync_envs_normalization
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 
 
@@ -69,6 +70,18 @@ def parse_args():
     # Output
     parser.add_argument("--output-dir", type=str, default=None,
                         help="Output directory (default: auto-generated)")
+
+    # Periodic evaluation during training
+    parser.add_argument("--eval-freq", type=int, default=50000,
+                        help="Run inference/evaluation every N timesteps (<=0 to disable)")
+    parser.add_argument("--eval-episodes", type=int, default=2,
+                        help="Number of episodes for each periodic evaluation")
+    parser.add_argument("--eval-video-fps", type=int, default=10,
+                        help="FPS for periodic evaluation videos")
+    parser.add_argument("--eval-save-video", action=argparse.BooleanOptionalAction, default=True,
+                        help="Save periodic evaluation videos (default: enabled)")
+    parser.add_argument("--eval-video-keep-last", type=int, default=20,
+                        help="Keep only the latest N periodic eval videos (<=0 keeps all)")
     
     # Test mode
     parser.add_argument("--test", action="store_true",
@@ -239,6 +252,205 @@ class SaveVecNormalizeCallback(BaseCallback):
         return True
 
 
+class PeriodicInferenceCallback(BaseCallback):
+    """Run periodic deterministic inference and optionally save evaluation videos."""
+
+    def __init__(
+        self,
+        args,
+        cfg,
+        save_dir: str,
+        eval_freq: int,
+        n_eval_episodes: int = 2,
+        save_video: bool = True,
+        video_fps: int = 10,
+        keep_last_videos: int = 20,
+        verbose: int = 1,
+    ):
+        super().__init__(verbose)
+        self.args = args
+        self.cfg = cfg
+        self.save_dir = save_dir
+        self.eval_freq = eval_freq
+        self.n_eval_episodes = max(1, n_eval_episodes)
+        self.save_video = save_video
+        self.video_fps = max(1, video_fps)
+        self.keep_last_videos = keep_last_videos
+
+        self.last_eval_step = 0
+        self.eval_env = None
+        self.video_dir = os.path.join(self.save_dir, "videos")
+        self.metrics_csv = os.path.join(self.save_dir, "eval_metrics.csv")
+        self._video_disabled_by_error = False
+
+    def _on_training_start(self) -> None:
+        os.makedirs(self.save_dir, exist_ok=True)
+        os.makedirs(self.video_dir, exist_ok=True)
+
+        if not os.path.exists(self.metrics_csv):
+            with open(self.metrics_csv, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["timesteps", "success_rate", "mean_reward", "mean_length", "video"])
+
+        self.eval_env = create_eval_env(self.args, self.cfg)
+        self.last_eval_step = self.model.num_timesteps
+
+    def _on_step(self) -> bool:
+        if self.eval_freq <= 0:
+            return True
+
+        if (self.model.num_timesteps - self.last_eval_step) >= self.eval_freq:
+            self._run_periodic_eval()
+            self.last_eval_step = self.model.num_timesteps
+        return True
+
+    def _on_training_end(self) -> None:
+        if self.eval_env is not None:
+            self.eval_env.close()
+
+    def _run_periodic_eval(self) -> None:
+        if self.eval_env is None:
+            return
+
+        if isinstance(self.training_env, VecNormalize) and isinstance(self.eval_env, VecNormalize):
+            sync_envs_normalization(self.training_env, self.eval_env)
+
+        rewards = []
+        lengths = []
+        successes = []
+        episode_frames_list = []
+
+        for ep_idx in range(self.n_eval_episodes):
+            success, ep_reward, ep_length, frames = self._run_one_eval_episode()
+            rewards.append(ep_reward)
+            lengths.append(ep_length)
+            successes.append(float(success))
+            episode_frames_list.append(frames)
+
+        mean_reward = float(np.mean(rewards)) if rewards else 0.0
+        mean_length = float(np.mean(lengths)) if lengths else 0.0
+        success_rate = float(np.mean(successes) * 100.0) if successes else 0.0
+
+        video_paths = []
+        if self.save_video:
+            for ep_idx, frames in enumerate(episode_frames_list):
+                if frames:
+                    video_path = self._save_video(frames, self.model.num_timesteps, ep_idx)
+                    if video_path:
+                        video_paths.append(video_path)
+
+        self.logger.record("eval/success_rate", success_rate)
+        self.logger.record("eval/mean_reward", mean_reward)
+        self.logger.record("eval/mean_ep_length", mean_length)
+        print(
+            f"\n[Periodic Eval] steps={self.model.num_timesteps:,} | "
+            f"success={success_rate:.1f}% | reward={mean_reward:.2f} | len={mean_length:.1f}"
+        )
+        if video_paths:
+            print(f"[Periodic Eval] videos saved: {len(video_paths)}")
+
+        with open(self.metrics_csv, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                self.model.num_timesteps,
+                f"{success_rate:.2f}",
+                f"{mean_reward:.4f}",
+                f"{mean_length:.2f}",
+                ";".join(video_paths),
+            ])
+
+    def _run_one_eval_episode(self):
+        obs = self.eval_env.reset()
+        done = False
+        ep_reward = 0.0
+        ep_length = 0
+        success = False
+        frames = []
+        max_steps = int(getattr(self.cfg, "max_episode_steps", 300))
+
+        while not done and ep_length < max_steps:
+            if self.save_video and not self._video_disabled_by_error:
+                try:
+                    frame = self.eval_env.render()
+                    if isinstance(frame, list):
+                        frame = frame[0] if frame else None
+                    if frame is not None:
+                        frames.append(np.array(frame))
+                except Exception as exc:
+                    self._video_disabled_by_error = True
+                    print(f"[Periodic Eval] render failed, disable video recording: {exc}")
+
+            action, _ = self.model.predict(obs, deterministic=True)
+            obs, rewards, dones, infos = self.eval_env.step(action)
+
+            reward_val = rewards[0] if hasattr(rewards, "__len__") else rewards
+            done = bool(dones[0]) if hasattr(dones, "__len__") else bool(dones)
+            info = infos[0] if isinstance(infos, (list, tuple)) and len(infos) > 0 else infos
+
+            ep_reward += float(reward_val)
+            ep_length += 1
+
+            if done and isinstance(info, dict):
+                success = bool(info.get("is_success", False))
+
+        return success, ep_reward, ep_length, frames
+
+    def _save_video(self, frames, timesteps: int, episode_idx: int):
+        if not frames:
+            return None
+
+        try:
+            import imageio.v2 as imageio
+        except ImportError:
+            print("[Periodic Eval] imageio not installed, skip video saving")
+            self._video_disabled_by_error = True
+            return None
+
+        video_path = os.path.join(self.video_dir, f"eval_{timesteps}_steps_ep{episode_idx + 1:02d}.mp4")
+        writer = imageio.get_writer(
+            video_path,
+            fps=self.video_fps,
+            codec="libx264",
+            pixelformat="yuv420p",
+            quality=7,
+        )
+        for frame in frames:
+            writer.append_data(frame)
+        writer.close()
+        self._cleanup_old_videos()
+        return video_path
+
+    def _cleanup_old_videos(self) -> None:
+        """Delete old periodic evaluation videos and keep only latest N files."""
+        if self.keep_last_videos <= 0:
+            return
+
+        pattern = os.path.join(self.video_dir, "eval_*_steps.mp4")
+        if not glob.glob(pattern):
+            pattern = os.path.join(self.video_dir, "eval_*_steps_ep*.mp4")
+        video_files = glob.glob(pattern)
+        if len(video_files) <= self.keep_last_videos:
+            return
+
+        def _extract_steps_and_ep(path: str):
+            name = os.path.basename(path)
+            match = re.search(r"eval_(\d+)_steps(?:_ep(\d+))?\.mp4", name)
+            if not match:
+                return -1, -1
+            steps = int(match.group(1))
+            ep = int(match.group(2)) if match.group(2) else 0
+            return steps, ep
+
+        video_files.sort(key=_extract_steps_and_ep)
+        files_to_delete = video_files[:-self.keep_last_videos]
+
+        for old_file in files_to_delete:
+            try:
+                os.remove(old_file)
+            except OSError as exc:
+                print(f"[Periodic Eval] failed to delete old video {old_file}: {exc}")
+
+
 def resolve_checkpoint_path(checkpoint_path: str):
     """Resolve checkpoint path to (model_path, vecnorm_path)."""
     if checkpoint_path is None:
@@ -322,7 +534,27 @@ def create_env(args, cfg, vecnorm_path=None):
     return env
 
 
-def create_callbacks(args, config, env, n_envs):
+def create_eval_env(args, cfg):
+    """Create a single-env evaluation environment for periodic inference."""
+    from envs import make_env
+
+    env = make_env(
+        backend=args.backend,
+        cfg=cfg,
+        obs_type=args.obs_type,
+        render_mode="rgb_array",
+    )
+
+    if not hasattr(env, "num_envs"):
+        env = DummyVecEnv([lambda: env])
+
+    if args.backend == "pybullet" and args.obs_type == "state":
+        env = VecNormalize(env, training=False, norm_reward=False)
+
+    return env
+
+
+def create_callbacks(args, cfg, config, env, n_envs):
     """Create training callbacks."""
     callbacks = []
 
@@ -352,6 +584,20 @@ def create_callbacks(args, config, env, n_envs):
                 name_prefix=config["model_name"],
             )
             callbacks.append(norm_callback)
+
+    if args.eval_freq > 0:
+        periodic_eval_callback = PeriodicInferenceCallback(
+            args=args,
+            cfg=cfg,
+            save_dir=os.path.join(config["base_dir"], "periodic_eval"),
+            eval_freq=args.eval_freq,
+            n_eval_episodes=args.eval_episodes,
+            save_video=args.eval_save_video,
+            video_fps=args.eval_video_fps,
+            keep_last_videos=args.eval_video_keep_last,
+            verbose=1,
+        )
+        callbacks.append(periodic_eval_callback)
 
     return callbacks
 
@@ -446,7 +692,7 @@ def train(args):
     env = create_env(args, cfg, vecnorm_path)
 
     # Create callbacks
-    callbacks = create_callbacks(args, config, env, args.n_envs)
+    callbacks = create_callbacks(args, cfg, config, env, args.n_envs)
 
     # Determine device
     device = get_device(args)
