@@ -47,14 +47,14 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
             num_envs: Ignored for PyBullet (always 1).
             device: Ignored for PyBullet (always CPU).
         """
-        super().__init__(cfg, render_mode, obs_type, num_envs=1, device="cpu")
+        super().__init__(cfg, render_mode, obs_type, num_envs=1, device=device)
 
 
         print(vars(cfg))
         self.difficulty = 0
         self.distance_threshold = self.cfg.success_threshold
         self.orientation_threshold = self.cfg.orientation_threshold
-        self.asset_dir = r"C:\Users\Lenovo\projects\robotrl\envs\assets"
+        self.asset_dir = r".\envs\assets"
         self.fixed_ee_z = self.cfg.fixed_ee_z
         # Ranges
         self.object_r_range = self.cfg.object_r_range
@@ -86,7 +86,7 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         self.phisics_client = p.connect(p.GUI if render_mode == "human" else p.DIRECT)
         p.setGravity(0, 0, -9.8)
         self.dt = 1.0 / 240.0  # Internal physics step
-        self.frame_skip = 24   # Control step: 240Hz / 24 = 10Hz control
+        self.frame_skip = 24   # Control step: 240Hz / 20 = 12Hz
         p.setTimeStep(self.dt)
 
         self.step_count = 0

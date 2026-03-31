@@ -27,6 +27,7 @@ import time
 import glob
 import re
 import csv
+import ast
 
 import numpy as np
 
@@ -40,9 +41,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train RL agent for Push Task")
 
     # Backend selection
-    parser.add_argument("--backend", type=str, default="pybullet",
-                        choices=["pybullet", "isaac_lab"],
-                        help="Environment backend: 'pybullet' or 'isaac_lab'")
+    parser.add_argument("--backend", type=str, default="pybullet")
 
     # Observation type
     parser.add_argument("--obs-type", type=str, default="state",
@@ -80,7 +79,7 @@ def parse_args():
                         help="FPS for periodic evaluation videos")
     parser.add_argument("--eval-save-video", action=argparse.BooleanOptionalAction, default=True,
                         help="Save periodic evaluation videos (default: enabled)")
-    parser.add_argument("--eval-video-keep-last", type=int, default=20,
+    parser.add_argument("--eval-video-keep-last", type=int, default=-1,
                         help="Keep only the latest N periodic eval videos (<=0 keeps all)")
     
     # Test mode
@@ -780,13 +779,52 @@ def test_env(args):
     # Create environment
     env = create_env(args, cfg, vecnorm_path)
 
-    while True:
-        obs = env.reset()
-        done = False
-        while not done:
-            action = env.action_space.sample()
-            action = action.reshape((env.num_envs, -1))
-            obs, reward, done, info = env.step(action)
+    obs = env.reset()
+
+    action_dim = int(np.prod(env.action_space.shape))
+    print("Interactive test mode started.")
+    print(f"Please input action array with {action_dim} values, e.g. [0.1, 0.0, -0.1]")
+    print("The same action will run for 5 steps each time. Type 'q' to quit.")
+
+    try:
+        while True:
+            user_input = input("\nAction> ").strip()
+            if user_input.lower() in {"q", "quit", "exit"}:
+                break
+
+            try:
+                # Support both "[0.1, 0, -0.1]" and "0.1, 0, -0.1" formats.
+                parsed = ast.literal_eval(user_input)
+                if not isinstance(parsed, (list, tuple, np.ndarray)):
+                    raise ValueError("Action must be a list/tuple/array")
+                action_vec = np.asarray(parsed, dtype=np.float32).reshape(-1)
+            except Exception:
+                try:
+                    action_vec = np.fromstring(user_input, sep=",", dtype=np.float32)
+                except Exception:
+                    action_vec = np.array([], dtype=np.float32)
+
+            if action_vec.size != action_dim:
+                print(f"Invalid action shape: got {action_vec.size}, expected {action_dim}. Try again.")
+                continue
+
+            action = np.tile(action_vec, (env.num_envs, 1))
+
+            for step_idx in range(5):
+                obs, reward, done, info = env.step(action)
+
+                reward_mean = float(np.mean(reward)) if hasattr(reward, "__len__") else float(reward)
+                done_any = bool(np.any(done)) if hasattr(done, "__len__") else bool(done)
+                print(f"step {step_idx + 1}/5 | reward_mean={reward_mean:.4f} | done_any={done_any}")
+
+                if done_any:
+                    obs = env.reset()
+                    print("Environment reset because at least one env finished.")
+    except KeyboardInterrupt:
+        print("\nInterrupted by user.")
+    finally:
+        env.close()
+        print("Test finished.")
 
 
 if __name__ == "__main__":

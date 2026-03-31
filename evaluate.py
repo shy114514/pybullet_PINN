@@ -165,7 +165,7 @@ def create_eval_env(args, cfg, vecnorm_path=None):
         env = VecNormalize.load(vecnorm_path, env)
         env.training = False
         env.norm_reward = False
-    env.env_method('set_difficulty', 10)
+    env.env_method('set_difficulty', 8)
     return env
 
 

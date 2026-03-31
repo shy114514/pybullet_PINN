@@ -10,7 +10,7 @@ import gymnasium as gym
 from gymnasium.wrappers import TimeLimit
 
 from .base import BasePushEnvConfig, BasePushEnv
-from .pybullet import PyBulletPushEnv
+from .pybullet import PyBulletPushEnv, WMPyBulletPushEnv
 
 
 def get_available_backends() -> List[str]:
@@ -19,7 +19,7 @@ def get_available_backends() -> List[str]:
     Returns:
         List of available backend names.
     """
-    backends = ["pybullet"]  # PyBullet is always available
+    backends = ["pybullet", "pybullet_wm"]  # PyBullet backends are always available
 
     # Check Isaac Lab availability
     try:
@@ -80,9 +80,19 @@ def make_env(
             render_mode=render_mode,
             obs_type=obs_type,
             num_envs=1,  # PyBullet always uses 1 env
-            device="cpu",  # PyBullet always uses CPU
+            device=device,  # PyBullet always uses CPU
         )
         # Wrap with TimeLimit
+        env = TimeLimit(env, max_episode_steps=cfg.max_episode_steps)
+
+    elif backend == "pybullet_wm":
+        env = WMPyBulletPushEnv(
+            cfg=cfg,
+            render_mode=render_mode,
+            obs_type=obs_type,
+            num_envs=1,
+            device=device,
+        )
         env = TimeLimit(env, max_episode_steps=cfg.max_episode_steps)
 
     elif backend == "isaac_lab":
@@ -164,6 +174,26 @@ def make_vec_env(
         env = sb3_make_vec_env(make_env_fn, n_envs=n_envs, vec_env_cls=vec_env_cls, monitor_kwargs={"info_keywords": ("is_success",)})
 
         # Apply VecNormalize for state observations
+        if obs_type == "state":
+            env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10., gamma=0.99)
+
+        return env
+
+    elif backend == "pybullet_wm":
+        if vec_env_cls is None:
+            vec_env_cls = SubprocVecEnv
+
+        def make_env_fn():
+            env = WMPyBulletPushEnv(
+                cfg=cfg,
+                render_mode=render_mode,
+                obs_type=obs_type,
+            )
+            env = TimeLimit(env, max_episode_steps=cfg.max_episode_steps)
+            return env
+
+        env = sb3_make_vec_env(make_env_fn, n_envs=n_envs, vec_env_cls=vec_env_cls, monitor_kwargs={"info_keywords": ("is_success",)})
+
         if obs_type == "state":
             env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10., gamma=0.99)
 
