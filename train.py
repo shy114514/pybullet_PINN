@@ -27,7 +27,6 @@ import time
 import glob
 import re
 import csv
-import ast
 
 import numpy as np
 
@@ -671,8 +670,8 @@ def train(args):
         cfg = load_config_from_yaml(args.config)
         print(f"Using config file: {args.config}")
     else:
-        cfg = BasePushEnvConfig()
-        print("Using default configuration")
+        cfg = load_config_from_yaml(os.path.join("configs", "config.yaml"))
+        print("Using default configuration from configs/config.yaml")
 
     # Get training config
     config = get_training_config(args, cfg)
@@ -760,8 +759,9 @@ def test_env(args):
         cfg = load_config_from_yaml(args.config)
         print(f"Using config file: {args.config}")
     else:
-        cfg = BasePushEnvConfig()
-        print("Using default configuration")
+        cfg = load_config_from_yaml(os.path.join("configs", "config.yaml"))
+        print("Using default configuration from configs/config.yaml")
+    cfg.max_episode_steps = 10000
 
     # Get training config
     config = get_training_config(args, cfg)
@@ -782,9 +782,17 @@ def test_env(args):
     obs = env.reset()
 
     action_dim = int(np.prod(env.action_space.shape))
+    if action_dim < 2:
+        print(f"Unsupported action_dim={action_dim}: need at least 2 dims for interactive test input.")
+        env.close()
+        return
+
+    last_input_pair = None
+
     print("Interactive test mode started.")
-    print(f"Please input action array with {action_dim} values, e.g. [0.1, 0.0, -0.1]")
-    print("The same action will run for 5 steps each time. Type 'q' to quit.")
+    print("Please input two numbers separated by space, e.g. 0.1 -0.2")
+    print("Press Enter to reuse previous input. Type 'q' to quit.")
+    print(f"Each command runs 5 steps. Env action_dim={action_dim}.")
 
     try:
         while True:
@@ -792,30 +800,30 @@ def test_env(args):
             if user_input.lower() in {"q", "quit", "exit"}:
                 break
 
-            try:
-                # Support both "[0.1, 0, -0.1]" and "0.1, 0, -0.1" formats.
-                parsed = ast.literal_eval(user_input)
-                if not isinstance(parsed, (list, tuple, np.ndarray)):
-                    raise ValueError("Action must be a list/tuple/array")
-                action_vec = np.asarray(parsed, dtype=np.float32).reshape(-1)
-            except Exception:
-                try:
-                    action_vec = np.fromstring(user_input, sep=",", dtype=np.float32)
-                except Exception:
-                    action_vec = np.array([], dtype=np.float32)
+            if user_input == "":
+                if last_input_pair is None:
+                    print("No previous input to reuse. Please enter two numbers.")
+                    continue
+                input_pair = last_input_pair.copy()
+                print(f"Reuse previous input: {input_pair[0]:.4f} {input_pair[1]:.4f}")
+            else:
+                input_pair = np.fromstring(user_input, sep=" ", dtype=np.float32)
+                if input_pair.size != 2:
+                    print("Invalid input. Please enter exactly two numbers separated by space.")
+                    continue
+                last_input_pair = input_pair.copy()
 
-            if action_vec.size != action_dim:
-                print(f"Invalid action shape: got {action_vec.size}, expected {action_dim}. Try again.")
-                continue
+            action_vec = np.zeros(action_dim, dtype=np.float32)
+            action_vec[0:2] = input_pair
 
             action = np.tile(action_vec, (env.num_envs, 1))
 
-            for step_idx in range(5):
+            for step_idx in range(6):
                 obs, reward, done, info = env.step(action)
 
                 reward_mean = float(np.mean(reward)) if hasattr(reward, "__len__") else float(reward)
                 done_any = bool(np.any(done)) if hasattr(done, "__len__") else bool(done)
-                print(f"step {step_idx + 1}/5 | reward_mean={reward_mean:.4f} | done_any={done_any}")
+                print(f"step {step_idx + 1}/6 | reward_mean={reward_mean:.4f} | done_any={done_any}")
 
                 if done_any:
                     obs = env.reset()
@@ -829,6 +837,9 @@ def test_env(args):
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.test and args.n_envs != 1:
+        print(f"Test mode enabled: overriding n_envs from {args.n_envs} to 1")
+        args.n_envs = 1
     if args.test:
         test_env(args)
     else:

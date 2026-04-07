@@ -203,6 +203,8 @@ class WMPyBulletPushEnv(PyBulletPushEnv):
         self.model_v_path = os.getenv("WM_V_MODEL_PATH", os.path.join(model_dir, "v_prediction.pth"))
         self.model_w_path = os.getenv("WM_W_MODEL_PATH", os.path.join(model_dir, "w_prediction.pth"))
         self.wm_device = device
+        self.dt = 1.0 / 24.0
+        self.frame_skip = 2
         self.control_dt = self.dt * self.frame_skip
 
         if not os.path.exists(self.model_v_path) or not os.path.exists(self.model_w_path):
@@ -217,6 +219,36 @@ class WMPyBulletPushEnv(PyBulletPushEnv):
         self.model_w = _load_w_prediction_model(self.model_w_path, device=self.wm_device)
 
         self._wm_xt = np.zeros(12, dtype=np.float32)
+
+    def _constrain_to_horizontal_plane(self, xt: np.ndarray) -> np.ndarray:
+        """
+        Constrain object pose to horizontal plane:
+        - Keep Z position unchanged
+        - Extract yaw angle and set roll, pitch to 0
+        - Only allow rotation around Z axis
+        """
+        xt_constrained = xt.copy()
+        
+        # Get original position and keep Z unchanged
+        original_z = xt[2]
+        xt_constrained[2] = original_z
+        
+        # Extract yaw from rotation vector
+        rotvec = xt[3:6]
+        rot = R.from_rotvec(rotvec)
+        euler = rot.as_euler('xyz')  # roll, pitch, yaw
+        
+        # Keep only yaw, set roll and pitch to 0
+        constrained_euler = np.array([0.0, 0.0, euler[2]], dtype=np.float32)
+        constrained_rot = R.from_euler('xyz', constrained_euler)
+        xt_constrained[3:6] = constrained_rot.as_rotvec().astype(np.float32)
+        
+        # Keep velocity but zero out Z component and angular components on X, Y
+        xt_constrained[8] = 0.0  # vz = 0
+        xt_constrained[10] = 0.0  # wx = 0
+        xt_constrained[11] = 0.0  # wy = 0
+        
+        return xt_constrained
 
     def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None) -> Tuple[np.ndarray, Dict]:
         obs, info = super().reset(seed=seed, options=options)
@@ -271,6 +303,9 @@ class WMPyBulletPushEnv(PyBulletPushEnv):
                 model_w=self.model_w,
                 dt=self.control_dt,
             )
+
+            # Constrain to horizontal plane (Z fixed, yaw only)
+            self._wm_xt = self._constrain_to_horizontal_plane(self._wm_xt)
 
             next_quat = R.from_rotvec(self._wm_xt[3:6]).as_quat()
             p.resetBasePositionAndOrientation(self.objectId, self._wm_xt[0:3].tolist(), next_quat.tolist())
