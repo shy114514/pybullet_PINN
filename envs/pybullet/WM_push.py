@@ -20,10 +20,14 @@ from .push_env import PyBulletPushEnv
 from ..base import BasePushEnvConfig
 
 
-class MLP_TwoHead(torch.nn.Module):
-    """Two-head MLP matching the architecture used in PINNs_WM.ipynb."""
+class MLPV(torch.nn.Module):
+    """Velocity model used by current PINN notebooks (predicts 2D translational velocity)."""
 
-    def __init__(self, input_dim: int = 24, hidden_dims: Tuple[int, int] = (2048, 256)):
+    def __init__(
+        self,
+        input_dim: int = 24,
+        hidden_dims: Tuple[int, ...] = (32, 32, 32, 32, 32, 32, 32, 32, 32, 32),
+    ):
         super().__init__()
         layers = []
         last = input_dim
@@ -31,12 +35,33 @@ class MLP_TwoHead(torch.nn.Module):
             layers += [torch.nn.Linear(last, h), torch.nn.Tanh()]
             last = h
         self.shared = torch.nn.Sequential(*layers)
-        self.fc_v = torch.nn.Linear(last, 3)
-        self.fc_w = torch.nn.Linear(last, 3)
+        self.fc_v = torch.nn.Linear(last, 2)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         h = self.shared(x)
-        return self.fc_v(h), self.fc_w(h)
+        return self.fc_v(h)
+
+
+class MLPW(torch.nn.Module):
+    """Angular model used by current PINN notebooks (predicts scalar angular velocity)."""
+
+    def __init__(
+        self,
+        input_dim: int = 24,
+        hidden_dims: Tuple[int, ...] = (32, 32, 32, 32, 32, 32, 32, 32, 32, 32),
+    ):
+        super().__init__()
+        layers = []
+        last = input_dim
+        for h in hidden_dims:
+            layers += [torch.nn.Linear(last, h), torch.nn.Tanh()]
+            last = h
+        self.shared = torch.nn.Sequential(*layers)
+        self.fc_w = torch.nn.Linear(last, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.shared(x)
+        return self.fc_w(h)
 
 
 class VPrediction(torch.nn.Module):
@@ -47,7 +72,7 @@ class VPrediction(torch.nn.Module):
 
     def forward(self, contact: torch.Tensor, vo: torch.Tensor, ve: torch.Tensor) -> torch.Tensor:
         x = torch.cat([contact, vo, ve], dim=0).unsqueeze(0).to(self.device).float()
-        v, _ = self.net(x)
+        v = self.net(x)
         return v.squeeze(0)
 
 
@@ -59,42 +84,48 @@ class WPrediction(torch.nn.Module):
 
     def forward(self, contact: torch.Tensor, vo: torch.Tensor, ve: torch.Tensor) -> torch.Tensor:
         x = torch.cat([contact, vo, ve], dim=0).unsqueeze(0).to(self.device).float()
-        _, w = self.net(x)
+        w = self.net(x)
         return w.squeeze(0)
 
 
 def _load_v_prediction_model(path: str, device: str = "cpu") -> VPrediction:
-    net = MLP_TwoHead(input_dim=24, hidden_dims=(2048, 256))
+    net = MLPV(input_dim=24)
     model = VPrediction(net, device)
 
     state_dict = torch.load(path, map_location=device)
     new_state_dict = {}
     for k, v in state_dict.items():
         new_key = k
-        if k.startswith("model."):
-            new_key = "net." + k[len("model."):]
-            new_key = new_key.replace("fc_trans", "fc_v").replace("fc_rot", "fc_w")
+        if new_key.startswith("model."):
+            new_key = new_key[len("model."):]
+        if new_key.startswith("net."):
+            new_key = new_key[len("net."):]
+        new_key = new_key.replace("fc_trans", "fc_v")
+        new_key = "net." + new_key
         new_state_dict[new_key] = v
 
-    model.load_state_dict(new_state_dict)
+    model.load_state_dict(new_state_dict, strict=True)
     model.eval()
     return model
 
 
 def _load_w_prediction_model(path: str, device: str = "cpu") -> WPrediction:
-    net = MLP_TwoHead(input_dim=24, hidden_dims=(2048, 256))
+    net = MLPW(input_dim=24)
     model = WPrediction(net, device)
 
     state_dict = torch.load(path, map_location=device)
     new_state_dict = {}
     for k, v in state_dict.items():
         new_key = k
-        if k.startswith("model."):
-            new_key = "net." + k[len("model."):]
-            new_key = new_key.replace("fc_trans", "fc_v").replace("fc_rot", "fc_w")
+        if new_key.startswith("model."):
+            new_key = new_key[len("model."):]
+        if new_key.startswith("net."):
+            new_key = new_key[len("net."):]
+        new_key = new_key.replace("fc_rot", "fc_w")
+        new_key = "net." + new_key
         new_state_dict[new_key] = v
 
-    model.load_state_dict(new_state_dict)
+    model.load_state_dict(new_state_dict, strict=True)
     model.eval()
     return model
 
@@ -132,8 +163,14 @@ def _infer_pose(
     vo = torch.from_numpy(vo).float()
     ve = torch.from_numpy(ve).float()
 
-    v_next_b = model_v(contact_b, vo, ve).cpu().numpy()
-    w_next_b = model_w(contact_b, vo, ve).cpu().numpy()
+    vxy_pred = model_v(contact_b, vo, ve).cpu().numpy()
+    wz_pred = model_w(contact_b, vo, ve).item()
+
+    w_next_b = np.zeros(3, dtype=np.float32)
+    v_next_b = np.zeros(3, dtype=np.float32)
+    w_next_b[0] = wz_pred
+    v_next_b[1] = vxy_pred[0]
+    v_next_b[2] = vxy_pred[1]
 
     v_next_w = r_wb.apply(v_next_b)
     w_next_w = r_wb.apply(w_next_b)
