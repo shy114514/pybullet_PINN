@@ -135,9 +135,13 @@ def _infer_pose(
     xt: np.ndarray,
     at: np.ndarray,
     contact_info: np.ndarray,
+    contact_distances: np.ndarray,
     model_v: VPrediction,
     model_w: WPrediction,
     dt: float,
+    depth_threshold: float,
+    depth_boost_gain: float,
+    depth_boost_max: float,
 ) -> np.ndarray:
     p_w = xt[0:3]
     r_w = xt[3:6]
@@ -165,6 +169,18 @@ def _infer_pose(
 
     vxy_pred = model_v(contact_b, vo, ve).cpu().numpy()
     wz_pred = model_w(contact_b, vo, ve).item()
+
+    # PyBullet contact distance is negative during penetration.
+    penetration_depth = max(0.0, float(-np.min(contact_distances)))
+    if penetration_depth > depth_threshold:
+        depth_excess = penetration_depth - depth_threshold
+        normalized_excess = depth_excess / max(depth_threshold, 1e-6)
+        boost = 1.0 + depth_boost_gain * normalized_excess
+        boost = min(boost, depth_boost_max)
+        vxy_pred *= boost
+        wz_pred *= boost
+
+    
 
     w_next_b = np.zeros(3, dtype=np.float32)
     v_next_b = np.zeros(3, dtype=np.float32)
@@ -205,6 +221,9 @@ class WMPyBulletPushEnv(PyBulletPushEnv):
         self.wm_device = device
         self.dt = 1.0 / 24.0
         self.frame_skip = 2
+        self.contact_depth_threshold = 0.002
+        self.contact_depth_boost_gain = 0.5
+        self.contact_depth_boost_max = 2.0
 
         if not os.path.exists(self.model_v_path) or not os.path.exists(self.model_w_path):
             raise FileNotFoundError(
@@ -290,17 +309,23 @@ class WMPyBulletPushEnv(PyBulletPushEnv):
 
         if has_collision:
             contact_info = np.zeros(12, dtype=np.float32)
+            contact_distances = np.zeros(2, dtype=np.float32)
             for i, c in enumerate(contacts[:2]):
                 contact_info[i * 6:i * 6 + 3] = np.array(c[5], dtype=np.float32)
                 contact_info[i * 6 + 3:i * 6 + 6] = np.array(c[7], dtype=np.float32)
+                contact_distances[i] = c[8]
 
             self._wm_xt = _infer_pose(
                 xt=self._wm_xt,
                 at=at,
                 contact_info=contact_info,
+                contact_distances=contact_distances,
                 model_v=self.model_v,
                 model_w=self.model_w,
                 dt=self.dt,
+                depth_threshold=self.contact_depth_threshold,
+                depth_boost_gain=self.contact_depth_boost_gain,
+                depth_boost_max=self.contact_depth_boost_max,
             )
             print(f"WM transition applied. New pose: {self._wm_xt[0:6]}")
             print(f"WM transition applied. New velocity: {self._wm_xt[6:12]}")
