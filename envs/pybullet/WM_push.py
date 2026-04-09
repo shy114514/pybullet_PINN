@@ -205,7 +205,6 @@ class WMPyBulletPushEnv(PyBulletPushEnv):
         self.wm_device = device
         self.dt = 1.0 / 24.0
         self.frame_skip = 2
-        self.control_dt = self.dt * self.frame_skip
 
         if not os.path.exists(self.model_v_path) or not os.path.exists(self.model_w_path):
             raise FileNotFoundError(
@@ -275,7 +274,7 @@ class WMPyBulletPushEnv(PyBulletPushEnv):
         target_ee_pos[1] += dy
 
         at = np.zeros(12, dtype=np.float32)
-        at[6:9] = np.array([dx / self.control_dt, dy / self.control_dt, 0.0], dtype=np.float32)
+        at[6:9] = np.array([dx / self.dt, dy / self.dt, 0.0], dtype=np.float32)
         at[9:12] = np.zeros(3, dtype=np.float32)
 
         # Teleport EE directly according to action (no physics stepping).
@@ -301,11 +300,13 @@ class WMPyBulletPushEnv(PyBulletPushEnv):
                 contact_info=contact_info,
                 model_v=self.model_v,
                 model_w=self.model_w,
-                dt=self.control_dt,
+                dt=self.dt,
             )
+            print(f"WM transition applied. New pose: {self._wm_xt[0:6]}")
+            print(f"WM transition applied. New velocity: {self._wm_xt[6:12]}")
 
             # Constrain to horizontal plane (Z fixed, yaw only)
-            self._wm_xt = self._constrain_to_horizontal_plane(self._wm_xt)
+            # self._wm_xt = self._constrain_to_horizontal_plane(self._wm_xt)
 
             next_quat = R.from_rotvec(self._wm_xt[3:6]).as_quat()
             p.resetBasePositionAndOrientation(self.objectId, self._wm_xt[0:3].tolist(), next_quat.tolist())
@@ -314,7 +315,7 @@ class WMPyBulletPushEnv(PyBulletPushEnv):
         self.ee_pos = target_ee_pos
 
         if self.render_mode == "human":
-            time.sleep(self.control_dt)
+            time.sleep(self.dt)
 
         self.step_count += 1
 

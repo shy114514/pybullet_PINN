@@ -761,7 +761,7 @@ def test_env(args):
     else:
         cfg = load_config_from_yaml(os.path.join("configs", "config.yaml"))
         print("Using default configuration from configs/config.yaml")
-    cfg.max_episode_steps = 10000
+    cfg.max_episode_steps = 1000
 
     # Get training config
     config = get_training_config(args, cfg)

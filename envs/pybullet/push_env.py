@@ -127,6 +127,46 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         # self.__parse_joint_info__()
         # self.__setup_mimic_joints__()
 
+    def draw_local_axes(self, body_unique_id, link_index=-1, line_length=0.5, line_width=3):
+        """
+        在指定的刚体/链接上绘制局部坐标系的 X(红), Y(绿), Z(蓝) 轴。
+        
+        参数:
+        body_unique_id: 模型的ID
+        link_index: 链接索引 (-1 表示 Base)
+        line_length: 绘制轴的长度
+        """
+        # 1. 获取当前位姿
+        if link_index == -1:
+            # 获取基座 (Base) 的位置和四元数
+            pos, quat = p.getBasePositionAndOrientation(body_unique_id)
+        else:
+            # 获取特定链接 (Link) 的世界状态
+            link_state = p.getLinkState(body_unique_id, link_index)
+            pos = link_state[4] # worldLinkFramePosition
+            quat = link_state[5] # worldLinkFrameOrientation
+
+        # 2. 将四元数转换为 3x3 旋转矩阵
+        # 旋转矩阵的列向量正是局部坐标系 XYZ 轴在世界坐标系下的方向向量
+        rot_matrix = p.getMatrixFromQuaternion(quat)
+        
+        # 提取局部 X, Y, Z 轴的方向向量
+        # rot_matrix 是一维数组，长度为9，按行优先排列：[R11, R12, R13, R21, R22, R23, R31, R32, R33]
+        x_axis = [rot_matrix[0], rot_matrix[3], rot_matrix[6]]
+        y_axis = [rot_matrix[1], rot_matrix[4], rot_matrix[7]]
+        z_axis = [rot_matrix[2], rot_matrix[5], rot_matrix[8]]
+
+        # 3. 计算轴的终点坐标 (起点 pos + 方向向量 * 长度)
+        x_end = [pos[i] + x_axis[i] * line_length for i in range(3)]
+        y_end = [pos[i] + y_axis[i] * line_length for i in range(3)]
+        z_end = [pos[i] + z_axis[i] * line_length for i in range(3)]
+
+        # 4. 绘制线条 (RGB 分别对应 XYZ)
+        # 返回的是 debug item ID，如果需要动态更新，可以在下一次绘制时传入 replaceItemUniqueId
+        p.addUserDebugLine(pos, x_end, lineColorRGB=[1, 0, 0], lineWidth=line_width) # 红 = X
+        p.addUserDebugLine(pos, y_end, lineColorRGB=[0, 1, 0], lineWidth=line_width) # 绿 = Y
+        p.addUserDebugLine(pos, z_end, lineColorRGB=[0, 0, 1], lineWidth=line_width) # 蓝 = Z
+
     def _create_dynamic_actors(self):
         
         self.ee_pos = np.array([0, 0, self.fixed_ee_z])
@@ -170,7 +210,7 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         )
 
         # 物体尺寸：长0.1，宽0.066 高0.026，原点位于中心
-        obj_center2mass_center = [0, -0.02, 0]
+        obj_center2mass_center = [0, 0, -0.02]
         shift = obj_center2mass_center
         p.setAdditionalSearchPath(self.asset_dir)
         obj_col = p.createCollisionShape(p.GEOM_MESH, fileName="object.obj", collisionFramePosition=shift)
@@ -183,7 +223,6 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
             baseOrientation=p.getQuaternionFromEuler([0, 0, 0])
         )
         p.changeDynamics(self.objectId, -1, lateralFriction=0.6, spinningFriction=0.01)
-
 
         target_col = -1  # No collision for target
         target_vis = p.createVisualShape(p.GEOM_MESH, fileName="object.obj", rgbaColor=[0, 1, 0, 0.3])
@@ -308,7 +347,9 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
         object_yaw = self.np_random.uniform(-np.pi, np.pi)
         
         obj_pos = [object_x, object_y, 0.025]
-        obj_orn = p.getQuaternionFromEuler([0, 0, object_yaw])
+        obj_base_orn = p.getQuaternionFromEuler([0, -np.pi/2, 0])
+        obj_yaw_orn = p.getQuaternionFromEuler([0, 0, object_yaw])
+        obj_orn = p.multiplyTransforms([0, 0, 0], obj_yaw_orn, [0, 0, 0], obj_base_orn)[1]
         
         p.resetBasePositionAndOrientation(self.objectId, obj_pos, obj_orn)
         p.resetBaseVelocity(self.objectId, [0,0,0], [0,0,0])
@@ -325,7 +366,9 @@ class PyBulletPushEnv(BasePushEnv, gym.Env):
 
         self.target_pos = np.array([target_x, target_y, 0.0])
         self.target_yaw = target_yaw
-        target_orn = p.getQuaternionFromEuler([0, 0, target_yaw])
+        target_base_orn = p.getQuaternionFromEuler([0, -np.pi/2, 0])
+        target_yaw_orn = p.getQuaternionFromEuler([0, 0, target_yaw])
+        target_orn = p.multiplyTransforms([0, 0, 0], target_yaw_orn, [0, 0, 0], target_base_orn)[1]
         
         p.resetBasePositionAndOrientation(self.targetId, self.target_pos, target_orn)
 
